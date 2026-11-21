@@ -30,6 +30,7 @@
     awaySince: E.isHomePath(window.location.pathname) ? 0 : Date.now(),
     returnIntent: null,
     returnIntentAt: 0,
+    lastReturnedHomeAt: 0,
     lastChipClickAt: 0,
     explicitRefreshUntil: 0,
     explicitLogoOnHome: false,
@@ -233,6 +234,8 @@
   }
 
   function buildIntentStateSnapshot() {
+    const recentlyReturnedHome =
+      Boolean(state.lastReturnedHomeAt) && Date.now() - state.lastReturnedHomeAt <= 5000;
     return {
       enabled: state.enabled,
       preserveOnLogoFromWatch: state.preserveOnLogoFromWatch,
@@ -243,7 +246,7 @@
       returnIntent: state.returnIntent,
       returnIntentAt: state.returnIntentAt,
       lastChipClickAt: state.lastChipClickAt,
-      wasAwayFromHome: state.wasAwayFromHome,
+      wasAwayFromHome: state.wasAwayFromHome || recentlyReturnedHome,
     };
   }
 
@@ -353,6 +356,7 @@
     state.explicitRefreshUntil = Date.now() + 12000;
     state.undoReplayPending = false;
     state.wasAwayFromHome = false;
+    state.lastReturnedHomeAt = 0;
     state.returnIntent = null;
     state.returnIntentAt = 0;
     state.activeChipSelected = false;
@@ -390,8 +394,66 @@
     triggerNativeHomeBrowse();
   }
 
-  // ---- 1. Intercept window.fetch for InnerTube /youtubei/v1/browse ----
+  // ---- 1. Intercept window.fetch for InnerTube /youtubei/v1/browse (with gzip/deflate decoding) ----
   const originalFetch = window.fetch.bind(window);
+
+  function readHeaderValue(headers, name) {
+    if (!headers) return '';
+    const target = name.toLowerCase();
+    try {
+      if (typeof headers.get === 'function') {
+        return headers.get(name) || headers.get(target) || '';
+      }
+      if (Array.isArray(headers)) {
+        for (const pair of headers) {
+          if (Array.isArray(pair) && String(pair[0] || '').toLowerCase() === target) {
+            return String(pair[1] || '');
+          }
+        }
+      } else if (typeof headers === 'object') {
+        for (const [k, v] of Object.entries(headers)) {
+          if (k.toLowerCase() === target) return String(v || '');
+        }
+      }
+    } catch {}
+    return '';
+  }
+
+  async function decodeBytesToText(bytes, contentEncoding = '') {
+    if (!bytes || bytes.byteLength === 0) return '';
+    const enc = (contentEncoding || '').toLowerCase();
+    const hasGzipMagic = bytes.byteLength >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+    const isGzip = hasGzipMagic || enc.includes('gzip');
+    const isDeflate = !isGzip && enc.includes('deflate');
+
+    if ((isGzip || isDeflate) && typeof DecompressionStream === 'function') {
+      try {
+        const ds = new DecompressionStream(isGzip ? 'gzip' : 'deflate');
+        const stream = new Blob([bytes]).stream().pipeThrough(ds);
+        return await new Response(stream).text();
+      } catch {
+        // Fall through to plain UTF-8 decode if stream wasn't actually compressed
+      }
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  async function extractBodyText(rawBody, contentEncoding = '') {
+    if (rawBody === null || rawBody === undefined) return '';
+    if (typeof rawBody === 'string') return rawBody;
+    if (ArrayBuffer.isView(rawBody)) {
+      const bytes = new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength);
+      return decodeBytesToText(bytes, contentEncoding);
+    }
+    if (Object.prototype.toString.call(rawBody) === '[object ArrayBuffer]') {
+      return decodeBytesToText(new Uint8Array(rawBody), contentEncoding);
+    }
+    if (typeof Blob !== 'undefined' && rawBody instanceof Blob) {
+      const buf = await rawBody.arrayBuffer();
+      return decodeBytesToText(new Uint8Array(buf), contentEncoding);
+    }
+    return '';
+  }
 
   async function extractFetchRequestMeta(input, init) {
     let url = '';
@@ -407,21 +469,26 @@
       return null;
     }
 
-    let rawBody = init && init.body !== undefined ? init.body : null;
-    if (
-      !rawBody &&
+    const contentEncoding =
+      readHeaderValue(init && init.headers, 'content-encoding') ||
+      (input instanceof Request ? readHeaderValue(input.headers, 'content-encoding') : '');
+
+    let rawText = '';
+    if (init && init.body !== undefined && init.body !== null) {
+      rawText = await extractBodyText(init.body, contentEncoding);
+    } else if (
       input instanceof Request &&
-      input.method &&
-      input.method.toUpperCase() === 'POST'
+      (!input.method || input.method.toUpperCase() === 'POST')
     ) {
       try {
-        rawBody = await input.clone().text();
+        const buf = await input.clone().arrayBuffer();
+        rawText = await decodeBytesToText(new Uint8Array(buf), contentEncoding);
       } catch {
-        rawBody = null;
+        rawText = '';
       }
     }
 
-    const reqInfo = E.parseBrowseRequestBody(rawBody);
+    const reqInfo = E.parseBrowseRequestBody(rawText);
     return { url, reqInfo };
   }
 
@@ -454,6 +521,7 @@
           state.restoredThisNav = true;
           state.undoneThisNav = isUndo;
           state.wasAwayFromHome = false;
+          state.lastReturnedHomeAt = 0;
           state.returnIntent = null;
           state.returnIntentAt = 0;
 
@@ -499,32 +567,42 @@
     return originalFetch(input, init);
   };
 
-  // ---- 2. Observe XMLHttpRequest fallback ----
+  // ---- 2. Observe XMLHttpRequest fallback (supports gzipped bodies too) ----
   const origXhrOpen = XMLHttpRequest.prototype.open;
   const origXhrSend = XMLHttpRequest.prototype.send;
+  const origXhrSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
   XMLHttpRequest.prototype.open = function tidelockXhrOpen(method, url) {
     this.__tidelockUrl = typeof url === 'string' ? url : String(url || '');
+    this.__tidelockEncoding = '';
     return origXhrOpen.apply(this, arguments);
+  };
+
+  XMLHttpRequest.prototype.setRequestHeader = function tidelockXhrSetHeader(name, value) {
+    if (typeof name === 'string' && name.toLowerCase() === 'content-encoding') {
+      this.__tidelockEncoding = String(value || '');
+    }
+    return origXhrSetHeader.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.send = function tidelockXhrSend(body) {
     if (this.__tidelockUrl && this.__tidelockUrl.includes('/youtubei/v1/browse')) {
-      const reqInfo = E.parseBrowseRequestBody(body);
-      if (reqInfo.valid) {
-        this.addEventListener('load', () => {
-          try {
-            if (this.status >= 200 && this.status < 300 && typeof this.responseText === 'string') {
-              const json = JSON.parse(this.responseText);
-              if (reqInfo.isHomeBrowse && !reqInfo.hasParams) {
-                captureFreshHomeFeed(json, 'xhr');
-              } else if (reqInfo.isContinuation) {
-                appendContinuationResponse(json);
-              }
+      const encoding = this.__tidelockEncoding || '';
+      this.addEventListener('load', async () => {
+        try {
+          const txt = await extractBodyText(body, encoding);
+          const reqInfo = E.parseBrowseRequestBody(txt);
+          if (!reqInfo.valid) return;
+          if (this.status >= 200 && this.status < 300 && typeof this.responseText === 'string') {
+            const json = JSON.parse(this.responseText);
+            if (reqInfo.isHomeBrowse && !reqInfo.hasParams) {
+              captureFreshHomeFeed(json, 'xhr');
+            } else if (reqInfo.isContinuation) {
+              appendContinuationResponse(json);
             }
-          } catch {}
-        });
-      }
+          }
+        } catch {}
+      });
     }
     return origXhrSend.apply(this, arguments);
   };
@@ -546,14 +624,14 @@
     return false;
   }
 
-  // Short-lived poll (up to 10s) for streaming ytInitialData / Polymer hydration on Home
+  // Short-lived poll (up to 24s) for streaming ytInitialData / Polymer hydration on Home (proxy-friendly)
   let initialPollTicks = 0;
   const initialPollTimer = setInterval(() => {
     initialPollTicks++;
     if (
       state.cachedHomeResponse ||
       !E.isHomePath(window.location.pathname) ||
-      initialPollTicks > 100
+      initialPollTicks > 120
     ) {
       clearInterval(initialPollTimer);
       return;
@@ -561,7 +639,9 @@
     if (tryCaptureInitialData('poll')) {
       clearInterval(initialPollTimer);
     }
-  }, 100);
+  }, 200);
+
+  window.addEventListener('load', () => tryCaptureInitialData('window-load'), { once: true });
 
   function onPageDataUpdated(event) {
     try {
@@ -640,6 +720,7 @@
         if (E.isHomePath(window.location.pathname)) {
           state.explicitRefreshUntil = Date.now() + 8000;
           state.explicitLogoOnHome = true;
+          state.lastReturnedHomeAt = 0;
           state.returnIntent = null;
           state.activeChipSelected = false;
         } else {
@@ -656,8 +737,10 @@
         state.activeChipSelected = !isFirstChip;
         if (!isFirstChip) {
           state.lastChipClickAt = Date.now();
+          state.lastReturnedHomeAt = 0;
         } else {
           state.explicitRefreshUntil = Date.now() + 4000;
+          state.lastReturnedHomeAt = 0;
         }
         return;
       }
@@ -742,7 +825,14 @@
       const wasUndone = currRoute === 'home' ? state.undoneThisNav : false;
       state.restoredThisNav = false;
       state.undoneThisNav = false;
-      if (currRoute === 'home') state.wasAwayFromHome = false;
+      if (currRoute === 'home') {
+        if (state.wasAwayFromHome && !wasRestored && !wasUndone) {
+          state.lastReturnedHomeAt = Date.now();
+        } else {
+          state.lastReturnedHomeAt = 0;
+        }
+        state.wasAwayFromHome = false;
+      }
 
       postToIsolated('NAV_BACK_TO_LIST', {
         routeKey: currRoute,

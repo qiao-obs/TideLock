@@ -7,7 +7,14 @@
   const D = globalThis.__TideLockDefaults;
   const E = globalThis.__TideLockEngine;
   const I = globalThis.__TideLockIcons;
-  if (!D || !E || !I) return;
+  if (!D || !E || !I) {
+    console.warn('[TideLock] Core module missing in ISOLATED world:', {
+      defaults: Boolean(D),
+      engine: Boolean(E),
+      icons: Boolean(I),
+    });
+    return;
+  }
 
   const { STORAGE_KEYS, DEFAULT_SETTINGS, DEFAULT_STATS, BRIDGE_CHANNEL, MSG } = D;
 
@@ -1870,6 +1877,12 @@
 
     // Self-healing bootstrap: YouTube hydrates <ytd-browse> asynchronously after DOMContentLoaded
     function ensureFeedHydratedAndObserved() {
+      if (!shadowRoot || (uiHost && !uiHost.isConnected)) {
+        shadowRoot = null;
+        uiHost = null;
+        dockEl = null;
+        ensureShadowUi();
+      }
       attachScopedGridObserver();
       renderDockState();
       scheduleDecorateActiveFeed(120);

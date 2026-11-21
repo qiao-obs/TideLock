@@ -46,6 +46,7 @@
   let searchQuery = '';
   let activeYouTubeTabId = null;
   let tabState = null;
+  let lastTabError = '';
 
   const els = {
     statusLabel: document.getElementById('status-label'),
@@ -99,8 +100,10 @@
         activeYouTubeTabId = tab.id;
         try {
           tabState = await chrome.tabs.sendMessage(tab.id, { type: MSG.GET_TAB_STATE });
-        } catch {
+          lastTabError = '';
+        } catch (err) {
           tabState = null;
+          lastTabError = err && err.message ? err.message : String(err || '');
         }
         const injected = Boolean(tabState && tabState.ok);
         els.ytActions.hidden = !injected;
@@ -425,8 +428,8 @@
         ? `已连接 · 缓存 ${tabState.cardCount || 0} 条${tabState.lastCaptureSource ? ` (${tabState.lastCaptureSource})` : ''}`
         : `Connected · ${tabState.cardCount || 0} cached${tabState.lastCaptureSource ? ` (${tabState.lastCaptureSource})` : ''}`
       : zh
-        ? '未激活（请刷新当前 YouTube 页面）'
-        : 'Not active (reload YouTube tab)';
+        ? `未激活（请刷新当前 YouTube 页面）${lastTabError ? ` · ${lastTabError}` : ''}`
+        : `Not active (reload YouTube tab)${lastTabError ? ` · ${lastTabError}` : ''}`;
     const decTxt = tabState?.lastDecision ? ` | ${tabState.lastDecision}` : '';
     const undoTxt = tabState?.hasPreviousFeed
       ? zh ? '可撤回上一批' : 'Undo ready'

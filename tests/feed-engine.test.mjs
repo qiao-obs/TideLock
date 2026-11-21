@@ -413,14 +413,31 @@ test('formatVideosAsMarkdown outputs clean Obsidian/Notion-ready Markdown links'
   assert.ok(md.includes('- [Deep Dive AI Engineering](https://www.youtube.com/watch?v=abc123XYZ89) — Dave · 3:10:07'));
 });
 
-test('Manifest V3, locales, commands, permissions, and Trusted Types / CSP compliance checks', () => {
+test('Manifest V3, locales, commands, permissions, cross-world isolation, and CSP compliance checks', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '2.1.0');
+  assert.equal(manifest.version, '2.1.1');
   assert.ok(manifest.permissions.includes('storage'));
   assert.ok(manifest.permissions.includes('contextMenus'));
   assert.ok(manifest.commands['toggle-drawer']);
   assert.equal(Defaults.DEFAULT_SETTINGS.enabled, true);
+
+  // Critical Chromium MV3 guard: never share the same content_script JS path across MAIN & ISOLATED worlds
+  const worldByPath = new Map();
+  for (const cs of manifest.content_scripts || []) {
+    const world = cs.world || 'ISOLATED';
+    for (const file of cs.js || []) {
+      assert.equal(
+        worldByPath.has(file),
+        false,
+        `Duplicate content script path "${file}" across content_scripts entries (${worldByPath.get(file)} vs ${world})`
+      );
+      worldByPath.set(file, world);
+    }
+  }
+  const coreEngineBuf = fs.readFileSync(path.join(ROOT, 'src/core/feed-engine.js'));
+  const mainEngineBuf = fs.readFileSync(path.join(ROOT, 'src/content/page-engine.js'));
+  assert.equal(coreEngineBuf.equals(mainEngineBuf), true, 'page-engine.js must stay byte-identical to feed-engine.js');
 
   for (const loc of ['en', 'zh_CN']) {
     const msgs = JSON.parse(fs.readFileSync(path.join(ROOT, '_locales', loc, 'messages.json'), 'utf8'));
@@ -445,4 +462,122 @@ test('Manifest V3, locales, commands, permissions, and Trusted Types / CSP compl
     }
   };
   scanDir(path.join(ROOT, 'src'));
+});
+
+test('page-bridge decompresses gzip-encoded YouTube 2026 /youtubei/v1/browse POST requests and replays cached Home feed', async () => {
+  const zlib = await import('node:zlib');
+  const homePayload = makeBrowsePayload([
+    makeLockupViewModelItem('AAA11111111', 'Cached Home Video 1'),
+    makeLockupViewModelItem('BBB22222222', 'Cached Home Video 2'),
+  ]);
+  const freshServerPayload = makeBrowsePayload([
+    makeLockupViewModelItem('NEW99999999', 'Refreshed Server Video'),
+  ]);
+
+  let serverFetchCalls = 0;
+  const postedMessages = [];
+  const listeners = new Map();
+  const addEvt = (t, fn) => {
+    if (!listeners.has(t)) listeners.set(t, []);
+    listeners.get(t).push(fn);
+  };
+
+  const sandbox = {
+    URL,
+    Request,
+    Response,
+    Headers,
+    Blob,
+    TextDecoder,
+    TextEncoder,
+    DecompressionStream,
+    Uint8Array,
+    ArrayBuffer,
+    CustomEvent,
+    setTimeout,
+    clearTimeout,
+    setInterval: () => 0,
+    clearInterval: () => {},
+    console,
+    performance: { getEntriesByType: () => [] },
+    location: { href: 'https://www.youtube.com/', pathname: '/', origin: 'https://www.youtube.com' },
+    scrollY: 0,
+    ytInitialData: homePayload,
+    XMLHttpRequest: class FakeXhr {
+      open() {}
+      send() {}
+      setRequestHeader() {}
+      addEventListener() {}
+    },
+    document: {
+      readyState: 'complete',
+      addEventListener: addEvt,
+      querySelector: () => null,
+      dispatchEvent: () => true,
+    },
+    addEventListener: addEvt,
+    postMessage(msg) {
+      postedMessages.push(msg);
+    },
+    fetch: async () => {
+      serverFetchCalls++;
+      return new Response(JSON.stringify(freshServerPayload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  };
+  sandbox.window = sandbox;
+  sandbox.self = sandbox;
+  sandbox.globalThis = sandbox;
+
+  const ctx = vm.createContext(sandbox);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/page-engine.js'), 'utf8'), ctx);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'src/content/page-bridge.js'), 'utf8'), ctx);
+
+  // Verify initial Home capture fired
+  assert.ok(postedMessages.some((m) => m.type === 'HOME_CAPTURED' && m.payload.count === 2));
+
+  // Simulate navigating away to a video (/watch?v=AAA11111111), watching for a long time, then returning Back
+  sandbox.location.href = 'https://www.youtube.com/watch?v=AAA11111111';
+  sandbox.location.pathname = '/watch';
+  for (const fn of listeners.get('yt-navigate-start') || []) {
+    fn({ detail: { url: 'https://www.youtube.com/watch?v=AAA11111111' } });
+  }
+  for (const fn of listeners.get('yt-navigate-finish') || []) fn();
+
+  // Simulate Back traverse to Home
+  sandbox.location.href = 'https://www.youtube.com/';
+  sandbox.location.pathname = '/';
+  for (const fn of listeners.get('popstate') || []) fn();
+
+  // Send a REAL YouTube 2026 gzip-compressed Request POST to /youtubei/v1/browse!
+  const gzippedBody = zlib.gzipSync(
+    Buffer.from(
+      JSON.stringify({
+        context: { client: { hl: 'zh-CN', gl: 'JP' } },
+        browseId: 'FEwhat_to_watch',
+      }),
+      'utf8'
+    )
+  );
+  const req = new Request('https://www.youtube.com/youtubei/v1/browse?prettyPrint=false', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Content-Encoding': 'gzip',
+    },
+    body: gzippedBody,
+  });
+
+  const res = await sandbox.fetch(req);
+  assert.equal(serverFetchCalls, 0, 'Cached Home feed must intercept gzipped browse POST without hitting server');
+  assert.equal(res.headers.get('x-tidelock-restored'), '1');
+  const returnedJson = await res.json();
+  const returnedCards = Engine.extractSnapshotCardsFromBrowse(returnedJson);
+  assert.deepEqual(
+    returnedCards.map((c) => c.videoId),
+    ['AAA11111111', 'BBB22222222']
+  );
+  assert.ok(postedMessages.some((m) => m.type === 'FEED_RESTORED'));
 });

@@ -46,10 +46,23 @@ function validateExtension() {
     const sw = path.join(ROOT, manifest.background.service_worker);
     if (!fs.existsSync(sw)) throw new Error(`Missing service worker: ${manifest.background.service_worker}`);
   }
+  const seenScriptPaths = new Map();
   for (const cs of manifest.content_scripts || []) {
+    const world = cs.world || 'ISOLATED';
     for (const f of [...(cs.js || []), ...(cs.css || [])]) {
       if (!fs.existsSync(path.join(ROOT, f))) throw new Error(`Missing content script asset: ${f}`);
+      if (seenScriptPaths.has(f) && seenScriptPaths.get(f) !== world) {
+        throw new Error(
+          `Content script "${f}" is shared across worlds (${seenScriptPaths.get(f)} & ${world}); Chromium deduplicates identical script paths across worlds.`
+        );
+      }
+      seenScriptPaths.set(f, world);
     }
+  }
+  const coreEngine = fs.readFileSync(path.join(ROOT, 'src/core/feed-engine.js'));
+  const mainEngine = fs.readFileSync(path.join(ROOT, 'src/content/page-engine.js'));
+  if (!coreEngine.equals(mainEngine)) {
+    throw new Error('src/content/page-engine.js is out of sync with src/core/feed-engine.js');
   }
   if (manifest.action?.default_popup) {
     const p = path.join(ROOT, manifest.action.default_popup);

@@ -52,7 +52,7 @@
 
 ### 在 Chrome / Edge / Brave 中免费加载（30 秒）
 
-1. 克隆仓库或前往 [Releases](https://github.com/qiao-obs/TideLock/releases) 下载 `tidelock-v2.0.0.zip` 解压：
+1. 克隆仓库或前往 [Releases](https://github.com/qiao-obs/TideLock/releases) 下载最新版本压缩包解压：
    ```bash
    git clone https://github.com/qiao-obs/TideLock.git
    ```

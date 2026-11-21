@@ -71,7 +71,7 @@ Layer 4 · Ephemeral MV3 Service Worker & Local Vault (src/background/service-wo
 
 ### Load Unpacked in Chrome / Edge / Brave (Free, 30 Seconds)
 
-1. Clone this repository or download `tidelock-v2.0.0.zip` from [Releases](https://github.com/qiao-obs/TideLock/releases):
+1. Clone this repository or download the latest release ZIP from [Releases](https://github.com/qiao-obs/TideLock/releases):
    ```bash
    git clone https://github.com/qiao-obs/TideLock.git
    ```
