@@ -48,11 +48,10 @@ English (with full Simplified Chinese `zh_CN` localization bundled)
 
 | Asset | Dimensions | Status | Filename |
 |-------|-----------|--------|----------|
-| Store Icon [REQUIRED] | 128×128 PNG | ✅ Ready | `icons/icon-128.png` |
-| Screenshot 1 [REQUIRED] | 1280×800 or 640×400 | ⬜ Not created | Capture YouTube Home with preserved feed toast & watched badge |
-| Screenshot 2 [RECOMMENDED] | 1280×800 or 640×400 | ⬜ Not created | Capture slide-over Snapshot Drawer with "Right beside what you just watched" shelf |
-| Screenshot 3 [RECOMMENDED] | 1280×800 or 640×400 | ⬜ Not created | Capture v2 popup in light/dark mode with Undo Refresh & Markdown export |
-| Small Promo Tile [RECOMMENDED] | 440×280 | ⬜ Not created | |
+| Store Icon (Chrome) [REQUIRED] | 128×128 PNG | ✅ Ready | `icons/icon-128.png` |
+| Store Logo (Edge Add-ons) [REQUIRED] | 300×300 PNG | ✅ Ready | `store-assets/edge-logo-300x300.png` |
+| Screenshot 1 [REQUIRED] | 1280×800 PNG | ✅ Ready | `store-assets/screenshot-hero-1280x800.png` |
+| Small Promo Tile [RECOMMENDED] | 440×280 PNG | ✅ Ready | `store-assets/small-promo-440x280.png` |
 
 ## Permissions Justification
 
@@ -85,7 +84,13 @@ https://github.com/qiao-obs/TideLock/blob/main/PRIVACY.md
 **Visibility**: Public
 **Regions**: All regions
 
-> **Free Store Option**: The exact same `dist/tidelock-v2.0.0.zip` package built by `npm run build` can be published for **\$0 (free)** to **Microsoft Edge Add-ons** (Partner Center).
+> **\$0 Free Store Publishing — Microsoft Edge Add-ons (Partner Center)**:
+> The exact same `dist/tidelock-v2.2.0.zip` package built by `npm run build` can be published for **\$0 (free)** to **Microsoft Edge Add-ons** at https://partner.microsoft.com/dashboard/microsoftedge :
+> 1. Sign in with a Microsoft account and register as an Edge Add-ons developer (**\$0 fee**, takes ~2 minutes).
+> 2. Click **Create new extension** → upload `dist/tidelock-v2.2.0.zip`.
+> 3. Under **Properties**, choose Category: `Productivity`, Privacy Policy URL: `https://github.com/qiao-obs/TideLock/blob/main/PRIVACY.md`, Support URL: `https://github.com/qiao-obs/TideLock/issues`.
+> 4. Under **Store listings** (English & 简体中文), upload `store-assets/edge-logo-300x300.png`, `store-assets/screenshot-hero-1280x800.png`, and `store-assets/small-promo-440x280.png`, then paste the descriptions above.
+> 5. Under **Availability**, select **Public** → **Submit for certification** (typically reviewed in 1–5 business days; once live, Edge users AND Chrome/Chromium users can discover it cleanly, while Chrome users can also install from GitHub Releases or Chrome Web Store later if desired).
 
 ## Developer Info
 
@@ -105,7 +110,9 @@ https://github.com/qiao-obs/TideLock
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
-| 2.1.0 | 2026-11-21 | Production YouTube 2026 fixes: desktop `richGridRowRenderer` recursive extraction & deduplicated stitching, intercept internal `params` on Home return without breaking topic chip clicks, 2026 camelCase DOM selectors (`ytLockupMetadataViewModelTitle`), self-healing grid observer hydration & `ytInitialData` / `<ytd-browse>.data` polling, 1-click Reload Tab banner for pre-existing YouTube tabs in Popup. | Draft |
+| 2.2.0 | 2026-11-21 | UX polish: default-ON "No Shorts" filter chip in Drawer & Popup, vertically draggable floating dock with 1-click Back-to-Locked-Home button on watch pages, 2026 single-row `lockupViewModel` view count extraction, invisible Unicode blank title filtering, middle-click / Ctrl+Click background tab open, dynamic version badge, slim scrollbars, store submission assets. | Ready |
+| 2.1.1 | 2026-11-21 | Critical live YouTube fixes: separated MAIN/ISOLATED engine paths (`src/content/page-engine.js`) to prevent Chromium cross-world script deduplication, added native `DecompressionStream('gzip'/'deflate')` decoding for YouTube 2026 gzipped `/youtubei/v1/browse` POST requests, extended cold-start hydration poll to 24s + `window.load`. | Released |
+| 2.1.0 | 2026-11-21 | Production YouTube 2026 fixes: desktop `richGridRowRenderer` recursive extraction & deduplicated stitching, intercept internal `params` on Home return without breaking topic chip clicks, 2026 camelCase DOM selectors (`ytLockupMetadataViewModelTitle`), self-healing grid observer hydration & `ytInitialData` / `<ytd-browse>.data` polling, 1-click Reload Tab banner for pre-existing YouTube tabs in Popup. | Released |
 | 2.0.0 | 2026-11-21 | Full architectural upgrade: IndexedDB cross-reload Home feed persistence, 1-click Undo Accidental Refresh (previous feed replay), zero-reload native YouTube SPA navigation from Drawer/Popup, "Right beside what you just watched" neighbor shelf, multi-feed scroll anchoring (Home + Subscriptions + Search), bilingual CN/EN title sync & search (Immersive Translate + DeArrow compatible), scoped debounced MutationObserver with O(1) card skip, pure SVG UI, right-click Pin context menu, Alt+Shift+T shortcut, Markdown export, live engine diagnostics. | Draft |
 | 1.0.0 | 2026-11-21 | Initial release: automatic home feed lock, continuation stitching, scroll restore, watched badges, quick-pin queue, local snapshot drawer & popup, EN/zh_CN i18n. | Draft |
 
