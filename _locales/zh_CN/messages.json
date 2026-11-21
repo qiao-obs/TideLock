@@ -1,0 +1,110 @@
+{
+  "extName": {
+    "message": "TideLock — YouTube 首页潮汐锁定"
+  },
+  "extDescription": {
+    "message": "看完 YouTube 视频退回首页不再刷新推荐流！自动锚定滚动位置、标记刚刚看过的视频，并本地保存首页快照与待看暂存栏。"
+  },
+  "statusActive": {
+    "message": "首页防刷新已开启"
+  },
+  "statusPaused": {
+    "message": "首页防刷新已暂停"
+  },
+  "statBlocked": {
+    "message": "已拦截刷新"
+  },
+  "statSnapshots": {
+    "message": "首页快照"
+  },
+  "statPinned": {
+    "message": "待看暂存"
+  },
+  "tabSnapshots": {
+    "message": "刚才的首页"
+  },
+  "tabPinned": {
+    "message": "待看暂存"
+  },
+  "tabSettings": {
+    "message": "设置"
+  },
+  "settingEnabled": {
+    "message": "回退首页自动锁定原推荐流"
+  },
+  "settingEnabledDesc": {
+    "message": "默认全自动生效，无需新开标签页，看完视频返回仍在原处。"
+  },
+  "settingLogoPreserve": {
+    "message": "从视频页点左上角 Logo 也保留原首页"
+  },
+  "settingLogoPreserveDesc": {
+    "message": "已在首页时再点 Logo 或按 F5 仍会正常换一批。"
+  },
+  "settingRestoreScroll": {
+    "message": "精准恢复离开前的滚动位置"
+  },
+  "settingRestoreScrollDesc": {
+    "message": "回到首页自动定位到刚才点开的那个视频卡片附近。"
+  },
+  "settingMarkWatched": {
+    "message": "轻标本次会话已看过的视频"
+  },
+  "settingMarkWatchedDesc": {
+    "message": "在点看过的卡片角落打一个淡雅角标，方便一眼找到旁边没看的。"
+  },
+  "settingShowDock": {
+    "message": "在 YouTube 角落显示轻量胶囊入口"
+  },
+  "settingShowDockDesc": {
+    "message": "专为桌面独立 YouTube 窗口设计，随时一键回看快照或换一批。"
+  },
+  "settingShowToast": {
+    "message": "恢复首页时显示轻提示"
+  },
+  "settingShowToastDesc": {
+    "message": "短暂提示已保住原首页，并附带一键「换一批」按钮。"
+  },
+  "btnRefreshFeed": {
+    "message": "立即换一批"
+  },
+  "btnOpenDrawer": {
+    "message": "在页面展开快照"
+  },
+  "btnClearSnapshots": {
+    "message": "清空快照"
+  },
+  "filterAll": {
+    "message": "全部"
+  },
+  "filterUnwatched": {
+    "message": "未看"
+  },
+  "filterWatched": {
+    "message": "已看"
+  },
+  "searchPlaceholder": {
+    "message": "搜索标题或频道名..."
+  },
+  "emptySnapshots": {
+    "message": "打开 YouTube 首页后，TideLock 会自动帮你留存首页视频快照。"
+  },
+  "emptyPinned": {
+    "message": "还没有暂存的视频。在首页卡片或快照里点图钉图标即可临时存到这里。"
+  },
+  "badgeWatched": {
+    "message": "刚刚看过"
+  },
+  "toastRestored": {
+    "message": "已为你稳住原首页"
+  },
+  "toastRefreshAction": {
+    "message": "换一批"
+  },
+  "pinAdded": {
+    "message": "已加入待看暂存栏"
+  },
+  "pinRemoved": {
+    "message": "已移出待看暂存栏"
+  }
+}

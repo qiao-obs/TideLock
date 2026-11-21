@@ -1,0 +1,110 @@
+{
+  "extName": {
+    "message": "TideLock — Keep YouTube Home Feed"
+  },
+  "extDescription": {
+    "message": "Stop YouTube from refreshing your home feed when returning from a video. Anchors scroll position, marks watched videos, and saves local feed snapshots."
+  },
+  "statusActive": {
+    "message": "Feed Lock Active"
+  },
+  "statusPaused": {
+    "message": "Feed Lock Paused"
+  },
+  "statBlocked": {
+    "message": "Refreshes blocked"
+  },
+  "statSnapshots": {
+    "message": "Saved snapshots"
+  },
+  "statPinned": {
+    "message": "Pinned videos"
+  },
+  "tabSnapshots": {
+    "message": "Snapshots"
+  },
+  "tabPinned": {
+    "message": "Pinned"
+  },
+  "tabSettings": {
+    "message": "Settings"
+  },
+  "settingEnabled": {
+    "message": "Auto-lock home feed on back"
+  },
+  "settingEnabledDesc": {
+    "message": "Restore the exact home feed when returning from a video without opening extra tabs."
+  },
+  "settingLogoPreserve": {
+    "message": "Also keep feed when clicking YouTube logo from a video"
+  },
+  "settingLogoPreserveDesc": {
+    "message": "Clicking the logo while already on Home still loads fresh videos."
+  },
+  "settingRestoreScroll": {
+    "message": "Restore exact scroll position"
+  },
+  "settingRestoreScrollDesc": {
+    "message": "Jump right back to the video card you clicked."
+  },
+  "settingMarkWatched": {
+    "message": "Mark videos watched in this session"
+  },
+  "settingMarkWatchedDesc": {
+    "message": "Subtle badge on opened cards so nearby unwatched videos stand out."
+  },
+  "settingShowDock": {
+    "message": "Show compact floating dock on YouTube"
+  },
+  "settingShowDockDesc": {
+    "message": "Handy for YouTube desktop PWA windows without a browser toolbar."
+  },
+  "settingShowToast": {
+    "message": "Show subtle restore notification"
+  },
+  "settingShowToastDesc": {
+    "message": "Brief pill with a one-click Refresh button when your feed is preserved."
+  },
+  "btnRefreshFeed": {
+    "message": "Refresh Feed Now"
+  },
+  "btnOpenDrawer": {
+    "message": "Open Snapshots on Page"
+  },
+  "btnClearSnapshots": {
+    "message": "Clear Snapshots"
+  },
+  "filterAll": {
+    "message": "All"
+  },
+  "filterUnwatched": {
+    "message": "Unwatched"
+  },
+  "filterWatched": {
+    "message": "Watched"
+  },
+  "searchPlaceholder": {
+    "message": "Search title or channel..."
+  },
+  "emptySnapshots": {
+    "message": "Visit YouTube Home and TideLock will automatically snapshot your feed."
+  },
+  "emptyPinned": {
+    "message": "No pinned videos yet. Hover any video card or snapshot item to pin it here."
+  },
+  "badgeWatched": {
+    "message": "Watched"
+  },
+  "toastRestored": {
+    "message": "Home feed preserved"
+  },
+  "toastRefreshAction": {
+    "message": "Refresh"
+  },
+  "pinAdded": {
+    "message": "Pinned to TideLock"
+  },
+  "pinRemoved": {
+    "message": "Removed from pinned"
+  }
+}

@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TideLock</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="header">
+        <div class="brand">
+          <img class="logo" src="../../icons/icon-32.png" alt="TideLock" width="24" height="24" />
+          <div class="brand-text">
+            <h1 class="title">TideLock</h1>
+            <span class="status" id="status-label"></span>
+          </div>
+        </div>
+        <label class="switch" aria-label="Toggle TideLock">
+          <input type="checkbox" id="master-toggle" />
+          <span class="slider"></span>
+        </label>
+      </header>
+
+      <section class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-value" id="stat-blocked">0</span>
+          <span class="stat-label" id="label-stat-blocked"></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value" id="stat-snapshots">0</span>
+          <span class="stat-label" id="label-stat-snapshots"></span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-value" id="stat-pinned">0</span>
+          <span class="stat-label" id="label-stat-pinned"></span>
+        </div>
+      </section>
+
+      <div class="quick-actions" id="yt-actions" hidden>
+        <button type="button" class="btn btn-primary" id="btn-open-drawer"></button>
+        <button type="button" class="btn btn-secondary" id="btn-refresh-feed"></button>
+      </div>
+
+      <nav class="tabs" role="tablist">
+        <button type="button" class="tab" data-tab="snapshots" id="tab-snapshots"></button>
+        <button type="button" class="tab" data-tab="pinned" id="tab-pinned"></button>
+        <button type="button" class="tab" data-tab="settings" id="tab-settings"></button>
+      </nav>
+
+      <main class="panel" id="panel-snapshots">
+        <div class="toolbar">
+          <div class="pill-row" id="snapshot-pills"></div>
+          <div class="pill-row" id="filter-pills"></div>
+          <input type="search" class="search-input" id="search-input" />
+        </div>
+        <div class="video-list" id="snapshot-list"></div>
+      </main>
+
+      <main class="panel" id="panel-pinned" hidden>
+        <div class="video-list" id="pinned-list"></div>
+      </main>
+
+      <main class="panel" id="panel-settings" hidden>
+        <div class="settings-list" id="settings-list"></div>
+        <div class="settings-footer">
+          <button type="button" class="btn btn-danger-ghost" id="btn-clear-snapshots"></button>
+        </div>
+      </main>
+    </div>
+
+    <script src="../core/defaults.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

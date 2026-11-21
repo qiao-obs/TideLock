@@ -1,0 +1,67 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "short_name": "TideLock",
+  "version": "1.0.0",
+  "description": "__MSG_extDescription__",
+  "default_locale": "en",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "__MSG_extName__",
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "exclude_matches": [
+        "https://www.youtube.com/embed/*"
+      ],
+      "js": [
+        "src/core/feed-engine.js",
+        "src/content/page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "https://www.youtube.com/*"
+      ],
+      "exclude_matches": [
+        "https://www.youtube.com/embed/*"
+      ],
+      "js": [
+        "src/core/defaults.js",
+        "src/core/feed-engine.js",
+        "src/content/content-main.js"
+      ],
+      "css": [
+        "src/content/content-page.css"
+      ],
+      "run_at": "document_start",
+      "world": "ISOLATED"
+    }
+  ]
+}

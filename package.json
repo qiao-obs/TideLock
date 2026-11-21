@@ -1,0 +1,17 @@
+{
+  "name": "tidelock",
+  "version": "1.0.0",
+  "description": "Freeze YouTube's home feed when returning from a video — with scroll anchoring, watched badges, quick-pin queue, and instant local feed snapshots.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "icons": "python scripts/generate-icons.py",
+    "build": "node scripts/build-zip.mjs",
+    "check": "npm test && npm run build"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Syntax check all extension scripts
+        run: |
+          node --check src/core/defaults.js
+          node --check src/core/feed-engine.js
+          node --check src/background/service-worker.js
+          node --check src/content/page-bridge.js
+          node --check src/content/content-main.js
+          node --check src/popup/popup.js
+
+      - name: Run unit tests
+        run: npm test
+
+      - name: Build and validate extension ZIP
+        run: npm run build
+
+      - name: Upload packaged ZIP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tidelock-extension-zip
+          path: dist/*.zip
