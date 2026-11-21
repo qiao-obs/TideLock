@@ -1,6 +1,6 @@
 {
   "name": "tidelock",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Tidal-lock your YouTube Home feed — zero-reload SPA feed freezing, IndexedDB persistence, accidental refresh undo, multi-feed scroll anchoring, neighboring unwatched shelf, and bilingual snapshot search.",
   "private": true,
   "type": "module",

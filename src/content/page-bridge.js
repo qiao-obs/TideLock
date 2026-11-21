@@ -30,12 +30,15 @@
     awaySince: E.isHomePath(window.location.pathname) ? 0 : Date.now(),
     returnIntent: null,
     returnIntentAt: 0,
+    lastChipClickAt: 0,
     explicitRefreshUntil: 0,
     explicitLogoOnHome: false,
     activeChipSelected: false,
     restoredThisNav: false,
     undoneThisNav: false,
     hydratedFromIdb: false,
+    lastCaptureSource: '',
+    lastDecision: '',
   };
 
   let persistTimer = null;
@@ -51,23 +54,29 @@
         },
         window.location.origin
       );
-    } catch {
-      // Ignore postMessage failures during page teardown
-    }
+    } catch {}
   }
 
-  function getCachedCardCount() {
-    if (!state.cachedHomeResponse) return 0;
+  function getCachedCards() {
+    if (!state.cachedHomeResponse) return [];
     const baseCards = E.extractSnapshotCardsFromBrowse(
       state.cachedHomeResponse,
       state.maxStitchedItems
     );
-    const seen = new Set(baseCards.map((c) => c.videoId));
-    for (const item of state.stitchedItems) {
-      const id = E.extractItemVideoId(item);
-      if (id) seen.add(id);
+    const extraCards = E.extractSnapshotCardsFromItems(
+      state.stitchedItems,
+      state.maxStitchedItems
+    );
+    const byId = new Map();
+    for (const c of baseCards) byId.set(c.videoId, c);
+    for (const c of extraCards) {
+      if (!byId.has(c.videoId)) byId.set(c.videoId, c);
     }
-    return seen.size;
+    return Array.from(byId.values()).slice(0, state.maxStitchedItems);
+  }
+
+  function getCachedCardCount() {
+    return getCachedCards().length;
   }
 
   function schedulePersistToIdb() {
@@ -86,7 +95,7 @@
       if (state.previousFeed) {
         void IDB.putFeedSlot('previous', state.previousFeed);
       }
-    }, 350);
+    }, 250);
   }
 
   async function hydrateFromIdb() {
@@ -101,8 +110,6 @@
         state.previousFeed = prev;
       }
 
-      // On non-Home pages (e.g. user refreshed a /watch page or Chrome discarded tab),
-      // hydrate current Home feed so pressing Back STILL restores the frozen Home feed!
       if (!E.isHomePath(window.location.pathname)) {
         if (cur && cur.baseResponse && !state.cachedHomeResponse) {
           state.feedId = cur.feedId;
@@ -111,10 +118,9 @@
           state.trailingContinuation = cur.trailingContinuation || null;
           state.hydratedFromIdb = true;
           state.wasAwayFromHome = true;
+          state.lastCaptureSource = 'idb-hydrate';
         }
       } else {
-        // On Home: if a previous feed existed in IDB before this fresh page load (e.g. F5 reload!),
-        // preserve that displaced feed in `previousFeed` so user can 1-click Undo Refresh!
         const navEntry = performance.getEntriesByType?.('navigation')?.[0];
         const isReload = navEntry && navEntry.type === 'reload';
         if (cur && cur.baseResponse && (!state.previousFeed || isReload)) {
@@ -123,9 +129,7 @@
       }
 
       emitStatusReport();
-    } catch {
-      // IDB optional fallback
-    }
+    } catch {}
   }
 
   function emitStatusReport() {
@@ -139,16 +143,18 @@
       isHome: E.isHomePath(window.location.pathname),
       routeKey: E.getRouteAnchorKey(window.location.href),
       wasAwayFromHome: state.wasAwayFromHome,
+      lastCaptureSource: state.lastCaptureSource,
+      lastDecision: state.lastDecision,
     });
   }
 
   function captureFreshHomeFeed(responseData, source = 'fetch') {
-    if (!responseData || !E.findRichGridContents(responseData)) return;
+    if (!responseData || !E.findRichGridContents(responseData)) return false;
 
     const cloned = E.safeClone(responseData);
     const incomingCards = E.extractSnapshotCardsFromBrowse(cloned, state.maxStitchedItems);
+    if (incomingCards.length === 0) return false;
 
-    // Rotate displaced active feed into `previousFeed` slot if genuinely distinct
     if (state.cachedHomeResponse) {
       const prevCards = E.extractSnapshotCardsFromBrowse(
         state.cachedHomeResponse,
@@ -173,6 +179,7 @@
     state.explicitLogoOnHome = false;
     state.activeChipSelected = false;
     state.hydratedFromIdb = false;
+    state.lastCaptureSource = source;
 
     schedulePersistToIdb();
 
@@ -184,6 +191,7 @@
       hasPreviousFeed: Boolean(state.previousFeed),
       scrollY: window.scrollY || 0,
     });
+    return true;
   }
 
   function appendContinuationResponse(responseData) {
@@ -196,24 +204,19 @@
     }
     if (!items.length) return;
 
-    const existingIds = new Set(
-      E.extractSnapshotCardsFromBrowse(state.cachedHomeResponse, state.maxStitchedItems).map(
-        (c) => c.videoId
-      )
-    );
-    for (const prev of state.stitchedItems) {
-      const id = E.extractItemVideoId(prev);
-      if (id) existingIds.add(id);
-    }
-
+    const existingIds = new Set(getCachedCards().map((c) => c.videoId));
     const newCards = [];
+
     for (const item of items) {
       if (state.stitchedItems.length >= state.maxStitchedItems) break;
-      const card = E.extractCardFromRichItem(item);
-      if (card) {
-        if (existingIds.has(card.videoId)) continue;
-        existingIds.add(card.videoId);
-        newCards.push(card);
+      const extracted = E.extractSnapshotCardsFromItems([item], 32);
+      if (extracted.length > 0) {
+        const unseen = extracted.filter((c) => !existingIds.has(c.videoId));
+        if (unseen.length === 0) continue;
+        for (const c of unseen) {
+          existingIds.add(c.videoId);
+          newCards.push(c);
+        }
       }
       state.stitchedItems.push(E.safeClone(item));
     }
@@ -239,6 +242,7 @@
       explicitLogoOnHome: state.explicitLogoOnHome,
       returnIntent: state.returnIntent,
       returnIntentAt: state.returnIntentAt,
+      lastChipClickAt: state.lastChipClickAt,
       wasAwayFromHome: state.wasAwayFromHome,
     };
   }
@@ -248,12 +252,11 @@
     const startHref = window.location.href;
     const ytApp = document.querySelector('ytd-app');
 
-    // Method 1: Polymer ytd-app.fire('yt-navigate', { endpoint })
     try {
       if (ytApp && typeof ytApp.fire === 'function') {
         ytApp.fire('yt-navigate', { endpoint });
       } else {
-        window.dispatchEvent(
+        document.dispatchEvent(
           new CustomEvent('yt-navigate', {
             bubbles: true,
             composed: true,
@@ -261,16 +264,13 @@
           })
         );
       }
-    } catch {
-      // Try fallback anchor click
-    }
+    } catch {}
 
-    // Verify SPA router accepted the transition within 320ms; fallback cleanly if not
     setTimeout(() => {
       if (window.location.href === startHref && fallbackUrl && fallbackUrl !== startHref) {
         window.location.href = fallbackUrl;
       }
-    }, 320);
+    }, 350);
   }
 
   function spaNavigateToVideo(url, videoId) {
@@ -288,31 +288,35 @@
     }
 
     if (isShort) {
-      const endpoint = {
-        commandMetadata: {
-          webCommandMetadata: {
-            url: `/shorts/${vid}`,
-            webPageType: 'WEB_PAGE_TYPE_SHORTS',
-            rootVe: 37414,
+      dispatchYouTubeSpaEndpoint(
+        {
+          commandMetadata: {
+            webCommandMetadata: {
+              url: `/shorts/${vid}`,
+              webPageType: 'WEB_PAGE_TYPE_SHORTS',
+              rootVe: 37414,
+            },
           },
+          reelWatchEndpoint: { videoId: vid },
         },
-        reelWatchEndpoint: { videoId: vid },
-      };
-      dispatchYouTubeSpaEndpoint(endpoint, `https://www.youtube.com/shorts/${vid}`);
+        `https://www.youtube.com/shorts/${vid}`
+      );
       return;
     }
 
-    const endpoint = {
-      commandMetadata: {
-        webCommandMetadata: {
-          url: `/watch?v=${vid}`,
-          webPageType: 'WEB_PAGE_TYPE_WATCH',
-          rootVe: 3832,
+    dispatchYouTubeSpaEndpoint(
+      {
+        commandMetadata: {
+          webCommandMetadata: {
+            url: `/watch?v=${vid}`,
+            webPageType: 'WEB_PAGE_TYPE_WATCH',
+            rootVe: 3832,
+          },
         },
+        watchEndpoint: { videoId: vid },
       },
-      watchEndpoint: { videoId: vid },
-    };
-    dispatchYouTubeSpaEndpoint(endpoint, `https://www.youtube.com/watch?v=${vid}`);
+      `https://www.youtube.com/watch?v=${vid}`
+    );
   }
 
   function triggerNativeHomeBrowse() {
@@ -352,7 +356,6 @@
     state.returnIntent = null;
     state.returnIntentAt = 0;
     state.activeChipSelected = false;
-
     triggerNativeHomeBrowse();
   }
 
@@ -362,7 +365,6 @@
       return;
     }
 
-    // Swap current <-> previous so user can even toggle back if desired!
     const displaced = state.cachedHomeResponse
       ? {
           feedId: state.feedId,
@@ -406,7 +408,12 @@
     }
 
     let rawBody = init && init.body !== undefined ? init.body : null;
-    if (!rawBody && input instanceof Request && input.method && input.method.toUpperCase() === 'POST') {
+    if (
+      !rawBody &&
+      input instanceof Request &&
+      input.method &&
+      input.method.toUpperCase() === 'POST'
+    ) {
       try {
         rawBody = await input.clone().text();
       } catch {
@@ -429,11 +436,11 @@
     if (meta && meta.reqInfo.valid) {
       const { reqInfo } = meta;
 
-      if (reqInfo.isHomeChip) {
-        state.activeChipSelected = true;
+      const decision = E.shouldInterceptHomeBrowse(buildIntentStateSnapshot(), reqInfo, Date.now());
+      if (reqInfo.isHomeBrowse) {
+        state.lastDecision = `${decision.intercept ? 'LOCKED' : 'PASS'}:${decision.reason}${reqInfo.hasParams ? '+p' : ''}`;
       }
 
-      const decision = E.shouldInterceptHomeBrowse(buildIntentStateSnapshot(), reqInfo, Date.now());
       if (decision.intercept && state.cachedHomeResponse) {
         const stitched = E.stitchHomeResponse(
           state.cachedHomeResponse,
@@ -458,6 +465,7 @@
             hasPreviousFeed: Boolean(state.previousFeed),
             awayDurationMs: state.awaySince ? Date.now() - state.awaySince : 0,
           });
+          emitStatusReport();
 
           return new Response(JSON.stringify(stitched), {
             status: 200,
@@ -476,15 +484,13 @@
         void (async () => {
           try {
             const json = await clone.json();
-            if (reqInfo.isHomeInitial) {
+            if (reqInfo.isHomeBrowse && decision.reason !== 'explicit_chip_filter') {
               state.explicitRefreshUntil = 0;
               captureFreshHomeFeed(json, 'fetch');
             } else if (reqInfo.isContinuation) {
               appendContinuationResponse(json);
             }
-          } catch {
-            // Never disrupt native fetch response
-          }
+          } catch {}
         })();
       }
       return response;
@@ -510,7 +516,7 @@
           try {
             if (this.status >= 200 && this.status < 300 && typeof this.responseText === 'string') {
               const json = JSON.parse(this.responseText);
-              if (reqInfo.isHomeInitial) {
+              if (reqInfo.isHomeBrowse && !reqInfo.hasParams) {
                 captureFreshHomeFeed(json, 'xhr');
               } else if (reqInfo.isContinuation) {
                 appendContinuationResponse(json);
@@ -523,26 +529,53 @@
     return origXhrSend.apply(this, arguments);
   };
 
-  // ---- 3. Capture Initial SSR ytInitialData & Polymer Events ----
+  // ---- 3. Multi-Source Initial Home Feed Capture (ytInitialData poll + Polymer browse.data + yt-page-data-updated) ----
   function tryCaptureInitialData(source) {
-    if (!E.isHomePath(window.location.pathname)) return;
-    if (state.cachedHomeResponse) return;
-    if (window.ytInitialData && E.findRichGridContents(window.ytInitialData)) {
-      captureFreshHomeFeed(window.ytInitialData, source);
+    if (!E.isHomePath(window.location.pathname)) return false;
+    if (state.cachedHomeResponse) return true;
+
+    if (window.ytInitialData && captureFreshHomeFeed(window.ytInitialData, source)) {
+      return true;
     }
+
+    // Fallback: Polymer <ytd-browse page-subtype="home"> holds live response in .data
+    const browseEl = document.querySelector('ytd-browse[page-subtype="home"]');
+    if (browseEl && browseEl.data && captureFreshHomeFeed(browseEl.data, `${source}:browse.data`)) {
+      return true;
+    }
+    return false;
   }
 
-  window.addEventListener('yt-page-data-updated', (event) => {
+  // Short-lived poll (up to 10s) for streaming ytInitialData / Polymer hydration on Home
+  let initialPollTicks = 0;
+  const initialPollTimer = setInterval(() => {
+    initialPollTicks++;
+    if (
+      state.cachedHomeResponse ||
+      !E.isHomePath(window.location.pathname) ||
+      initialPollTicks > 100
+    ) {
+      clearInterval(initialPollTimer);
+      return;
+    }
+    if (tryCaptureInitialData('poll')) {
+      clearInterval(initialPollTimer);
+    }
+  }, 100);
+
+  function onPageDataUpdated(event) {
     try {
       const pageData = event?.detail?.pageData;
       const browseEp = pageData?.endpoint?.browseEndpoint;
-      const isHomeBrowse =
-        browseEp && browseEp.browseId === 'FEwhat_to_watch' && !browseEp.params;
+      const isHomeBrowse = browseEp && browseEp.browseId === 'FEwhat_to_watch' && !browseEp.params;
       if (isHomeBrowse && pageData.response && !state.cachedHomeResponse) {
         captureFreshHomeFeed(pageData.response, 'yt-page-data-updated');
       }
     } catch {}
-  });
+  }
+
+  window.addEventListener('yt-page-data-updated', onPageDataUpdated);
+  document.addEventListener('yt-page-data-updated', onPageDataUpdated);
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', () => tryCaptureInitialData('dom-ready'), {
@@ -552,10 +585,9 @@
     tryCaptureInitialData('immediate');
   }
 
-  // Hydrate persistent cache from IndexedDB immediately
   void hydrateFromIdb();
 
-  // ---- 4. Navigation Intent & Multi-Route Tracking ----
+  // ---- 4. Navigation Intent & Multi-Route Tracking (listen on BOTH document & window!) ----
   window.addEventListener('popstate', () => {
     if (E.isHomePath(window.location.pathname)) {
       state.returnIntent = 'BACK_TRAVERSE';
@@ -622,7 +654,9 @@
       if (chip && E.isHomePath(window.location.pathname)) {
         const isFirstChip = chip.parentElement && chip.parentElement.firstElementChild === chip;
         state.activeChipSelected = !isFirstChip;
-        if (isFirstChip) {
+        if (!isFirstChip) {
+          state.lastChipClickAt = Date.now();
+        } else {
           state.explicitRefreshUntil = Date.now() + 4000;
         }
         return;
@@ -652,7 +686,12 @@
     true
   );
 
-  window.addEventListener('yt-navigate-start', (event) => {
+  let lastNavStartAt = 0;
+  function onNavigateStart(event) {
+    const now = Date.now();
+    if (now - lastNavStartAt < 50) return;
+    lastNavStartAt = now;
+
     const prevRoute = state.lastRouteKey;
     const nextUrl = event?.detail?.url || window.location.href;
     const nextRoute = E.getRouteAnchorKey(nextUrl);
@@ -671,9 +710,14 @@
         scrollY: window.scrollY || 0,
       });
     }
-  });
+  }
 
-  window.addEventListener('yt-navigate-finish', () => {
+  let lastNavFinishAt = 0;
+  function onNavigateFinish() {
+    const now = Date.now();
+    if (now - lastNavFinishAt < 50) return;
+    lastNavFinishAt = now;
+
     const currHref = window.location.href;
     const currRoute = E.getRouteAnchorKey(currHref);
     const prevRoute = state.lastRouteKey;
@@ -690,6 +734,7 @@
 
     if (currRoute === 'home') {
       tryCaptureInitialData('navigate-finish');
+      setTimeout(() => tryCaptureInitialData('navigate-finish-late'), 600);
     }
 
     if (currRoute && currRoute !== prevRoute) {
@@ -710,7 +755,12 @@
     }
 
     emitStatusReport();
-  });
+  }
+
+  document.addEventListener('yt-navigate-start', onNavigateStart);
+  window.addEventListener('yt-navigate-start', onNavigateStart);
+  document.addEventListener('yt-navigate-finish', onNavigateFinish);
+  window.addEventListener('yt-navigate-finish', onNavigateFinish);
 
   // ---- 5. Listen to Commands from ISOLATED Content Script ----
   window.addEventListener('message', (event) => {
@@ -732,6 +782,20 @@
         }
         if (typeof s.idbTtlHours === 'number' && s.idbTtlHours > 0) {
           state.idbTtlMs = s.idbTtlHours * 60 * 60 * 1000;
+        }
+        // Re-broadcast cached Home feed if ISOLATED script finished booting after capture
+        if (state.cachedHomeResponse && E.isHomePath(window.location.pathname)) {
+          const cards = getCachedCards();
+          if (cards.length > 0) {
+            postToIsolated('HOME_CAPTURED', {
+              feedId: state.feedId,
+              source: `${state.lastCaptureSource}:resync`,
+              count: cards.length,
+              videos: cards,
+              hasPreviousFeed: Boolean(state.previousFeed),
+              scrollY: window.scrollY || 0,
+            });
+          }
         }
         emitStatusReport();
         break;

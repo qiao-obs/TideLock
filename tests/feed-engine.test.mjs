@@ -221,20 +221,70 @@ test('shouldInterceptHomeBrowse handles back navigation, logo clicks, explicit r
   assert.equal(explicitRes.intercept, false);
   assert.equal(explicitRes.reason, 'explicit_refresh');
 
-  // Chip filter -> never intercept
+  // Chip filter clicked explicitly within TTL -> never intercept
   const chipRes = Engine.shouldInterceptHomeBrowse(
     {
       enabled: true,
       hasCachedFeed: true,
       returnIntent: 'BACK_TRAVERSE',
       returnIntentAt: now - 100,
+      lastChipClickAt: now - 500,
       wasAwayFromHome: true,
     },
     reqChip,
     now
   );
   assert.equal(chipRes.intercept, false);
-  assert.equal(chipRes.reason, 'not_home_initial');
+  assert.equal(chipRes.reason, 'explicit_chip_filter');
+
+  // Internal YouTube params on Home return WITHOUT clicking a chip -> MUST intercept!
+  const internalParamsBack = Engine.shouldInterceptHomeBrowse(
+    {
+      enabled: true,
+      hasCachedFeed: true,
+      returnIntent: 'BACK_TRAVERSE',
+      returnIntentAt: now - 200,
+      lastChipClickAt: 0,
+      wasAwayFromHome: true,
+    },
+    reqChip,
+    now
+  );
+  assert.equal(internalParamsBack.intercept, true);
+  assert.equal(internalParamsBack.reason, 'back_traverse');
+});
+
+test('extractSnapshotCardsFromBrowse & stitchHomeResponse support desktop richGridRowRenderer rows', () => {
+  const row1 = {
+    richGridRowRenderer: {
+      contents: [
+        makeVideoRendererItem('row00000001', 'Row Video 1', 'Ch 1'),
+        makeLockupViewModelItem('row00000002', 'Row Video 2', 'Ch 2'),
+      ],
+    },
+  };
+  const row2 = {
+    richGridRowRenderer: {
+      contents: [
+        makeLockupViewModelItem('row00000003', 'Row Video 3', 'Ch 3'),
+      ],
+    },
+  };
+
+  const base = makeBrowsePayload([row1], 'TOK_ROW_1');
+  const cards = Engine.extractSnapshotCardsFromBrowse(base);
+  assert.deepEqual(
+    cards.map((c) => c.videoId),
+    ['row00000001', 'row00000002']
+  );
+
+  // Stitch row2 + duplicate row1
+  const stitched = Engine.stitchHomeResponse(base, [row1, row2], null, 50);
+  const stitchedCards = Engine.extractSnapshotCardsFromBrowse(stitched);
+  assert.deepEqual(
+    stitchedCards.map((c) => c.videoId),
+    ['row00000001', 'row00000002', 'row00000003']
+  );
 });
 
 test('extractSnapshotCardsFromBrowse parses legacy videoRenderer and 2026 lockupViewModel while skipping ads', () => {
@@ -366,7 +416,7 @@ test('formatVideosAsMarkdown outputs clean Obsidian/Notion-ready Markdown links'
 test('Manifest V3, locales, commands, permissions, and Trusted Types / CSP compliance checks', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '2.0.0');
+  assert.equal(manifest.version, '2.1.0');
   assert.ok(manifest.permissions.includes('storage'));
   assert.ok(manifest.permissions.includes('contextMenus'));
   assert.ok(manifest.commands['toggle-drawer']);

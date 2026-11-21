@@ -349,7 +349,15 @@
   function extractCardInfoFromDomElement(itemEl) {
     if (!(itemEl instanceof Element)) return null;
     const link = itemEl.querySelector(
-      'a#video-title-link[href*="/watch?"], a.yt-lockup-metadata-view-model__title[href*="/watch?"], a#video-title[href*="/watch?"], a[href*="/watch?v="], a[href*="/shorts/"]'
+      [
+        'a#video-title-link[href*="/watch?"]',
+        'a.ytLockupMetadataViewModelTitle[href*="/watch?"]',
+        'a.yt-lockup-metadata-view-model__title[href*="/watch?"]',
+        'a#video-title[href*="/watch?"]',
+        'a.shortsLockupViewModelHostEndpoint[href*="/shorts/"]',
+        'a[href*="/watch?v="]',
+        'a[href*="/shorts/"]',
+      ].join(', ')
     );
     if (!link) return null;
     const href = link.getAttribute('href') || '';
@@ -358,21 +366,33 @@
 
     const titleEl =
       itemEl.querySelector('#video-title') ||
+      itemEl.querySelector('a.ytLockupMetadataViewModelTitle') ||
+      itemEl.querySelector('.ytLockupMetadataViewModelHeadingReset') ||
       itemEl.querySelector('.yt-lockup-metadata-view-model__title') ||
+      itemEl.querySelector('.shortsLockupViewModelHostMetadataTitle') ||
       itemEl.querySelector('h3 a') ||
+      itemEl.querySelector('h3') ||
       link;
-    const displayTitle = (titleEl?.textContent || link.getAttribute('title') || '').trim();
+    const displayTitle = (
+      titleEl?.textContent ||
+      link.getAttribute('title') ||
+      link.getAttribute('aria-label') ||
+      ''
+    ).trim();
     if (!displayTitle) return null;
 
     const channelEl =
       itemEl.querySelector('ytd-channel-name #text') ||
+      itemEl.querySelector('.ytContentMetadataViewModelMetadataRow a') ||
       itemEl.querySelector('.yt-content-metadata-view-model__metadata-row a') ||
+      itemEl.querySelector('.ytContentMetadataViewModelMetadataRow span') ||
       itemEl.querySelector('.yt-content-metadata-view-model__metadata-row span');
     const channel = (channelEl?.textContent || '').trim();
 
     const durEl =
       itemEl.querySelector('ytd-thumbnail-overlay-time-status-renderer #text') ||
       itemEl.querySelector('badge-shape .badge-shape-wiz__text') ||
+      itemEl.querySelector('.ytBadgeShapeText') ||
       itemEl.querySelector('.yt-badge-shape__text');
     const duration = (durEl?.textContent || '').trim();
 
@@ -396,6 +416,7 @@
     return (
       itemEl.querySelector('ytd-thumbnail') ||
       itemEl.querySelector('yt-thumbnail-view-model') ||
+      itemEl.querySelector('a.ytLockupViewModelContentImage') ||
       itemEl.querySelector('a.yt-lockup-view-model__content-image') ||
       itemEl.querySelector('a#thumbnail')
     );
@@ -416,11 +437,14 @@
     const root = getActiveListRoot(routeKey);
     if (!root) return;
 
-    const selector =
-      routeKey.startsWith('search')
-        ? 'ytd-video-renderer, ytd-rich-item-renderer'
-        : 'ytd-rich-item-renderer';
-    const items = Array.from(root.querySelectorAll(selector));
+    const selector = routeKey.startsWith('search')
+      ? 'ytd-video-renderer, ytd-rich-item-renderer, yt-lockup-view-model'
+      : 'ytd-rich-item-renderer, yt-lockup-view-model';
+    const rawItems = Array.from(root.querySelectorAll(selector));
+    // Avoid double-visiting yt-lockup-view-model nested inside ytd-rich-item-renderer
+    const items = rawItems.filter(
+      (el) => !(el.tagName === 'YT-LOCKUP-VIEW-MODEL' && el.closest('ytd-rich-item-renderer'))
+    );
     if (items.length === 0) return;
 
     const pinnedIds = new Set(pinned.map((p) => p.videoId));
@@ -1844,16 +1868,30 @@
       if (ev.key === 'Escape' && drawerOpen) setDrawerOpen(false);
     });
 
-    window.addEventListener('yt-navigate-finish', () => {
-      setTimeout(() => {
-        attachScopedGridObserver();
-        renderDockState();
-        scheduleDecorateActiveFeed(200);
-      }, 120);
-    });
+    // Self-healing bootstrap: YouTube hydrates <ytd-browse> asynchronously after DOMContentLoaded
+    function ensureFeedHydratedAndObserved() {
+      attachScopedGridObserver();
+      renderDockState();
+      scheduleDecorateActiveFeed(120);
+      const vid = E.extractVideoIdFromUrl(window.location.href);
+      if (vid) void markVideoWatched(vid);
+    }
 
-    attachScopedGridObserver();
-    scheduleDecorateActiveFeed(250);
+    const onYtNavFinish = () => {
+      setTimeout(ensureFeedHydratedAndObserved, 150);
+      setTimeout(ensureFeedHydratedAndObserved, 850);
+    };
+
+    document.addEventListener('yt-navigate-finish', onYtNavFinish);
+    window.addEventListener('yt-navigate-finish', onYtNavFinish);
+
+    ensureFeedHydratedAndObserved();
+    for (const delay of [450, 1100, 2200, 3800]) {
+      setTimeout(() => {
+        if (!observedContainer) attachScopedGridObserver();
+        scheduleDecorateActiveFeed(80);
+      }, delay);
+    }
   }
 
   void loadAllState();

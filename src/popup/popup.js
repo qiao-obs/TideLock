@@ -56,6 +56,9 @@
     labelStatBlocked: document.getElementById('label-stat-blocked'),
     labelStatSnapshots: document.getElementById('label-stat-snapshots'),
     labelStatPinned: document.getElementById('label-stat-pinned'),
+    reloadBanner: document.getElementById('reload-banner'),
+    reloadText: document.getElementById('reload-text'),
+    btnReloadTab: document.getElementById('btn-reload-tab'),
     ytActions: document.getElementById('yt-actions'),
     btnOpenDrawer: document.getElementById('btn-open-drawer'),
     btnUndoRefresh: document.getElementById('btn-undo-refresh'),
@@ -94,16 +97,25 @@
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab && tab.id && typeof tab.url === 'string' && tab.url.startsWith('https://www.youtube.com/')) {
         activeYouTubeTabId = tab.id;
-        els.ytActions.hidden = false;
         try {
           tabState = await chrome.tabs.sendMessage(tab.id, { type: MSG.GET_TAB_STATE });
         } catch {
           tabState = null;
         }
+        const injected = Boolean(tabState && tabState.ok);
+        els.ytActions.hidden = !injected;
+        els.reloadBanner.hidden = injected;
+        if (!injected) {
+          els.reloadText.textContent = isZh()
+            ? '此页面是在安装/更新前打开的，刷新一次即可激活'
+            : 'Tab opened before install/update — reload once to activate';
+          els.btnReloadTab.textContent = isZh() ? '立即刷新' : 'Reload';
+        }
       } else {
         activeYouTubeTabId = null;
         tabState = null;
         els.ytActions.hidden = true;
+        els.reloadBanner.hidden = true;
       }
     } catch {
       activeYouTubeTabId = null;
@@ -410,15 +422,16 @@
     const zh = isZh();
     const bridgeTxt = tabState
       ? zh
-        ? `已连接 · 缓存 ${tabState.cardCount || 0} 条${tabState.hydratedFromIdb ? ' (IDB 恢复)' : ''}`
-        : `Connected · ${tabState.cardCount || 0} cached${tabState.hydratedFromIdb ? ' (IDB)' : ''}`
+        ? `已连接 · 缓存 ${tabState.cardCount || 0} 条${tabState.lastCaptureSource ? ` (${tabState.lastCaptureSource})` : ''}`
+        : `Connected · ${tabState.cardCount || 0} cached${tabState.lastCaptureSource ? ` (${tabState.lastCaptureSource})` : ''}`
       : zh
-        ? '未在 YouTube 标签页'
-        : 'Open YouTube to inspect live cache';
+        ? '未激活（请刷新当前 YouTube 页面）'
+        : 'Not active (reload YouTube tab)';
+    const decTxt = tabState?.lastDecision ? ` | ${tabState.lastDecision}` : '';
     const undoTxt = tabState?.hasPreviousFeed
-      ? zh ? '可撤回上一批首页' : 'Undo slot ready'
-      : zh ? '暂无上一批缓存' : 'No displaced feed';
-    els.diagBox.textContent = `${t('diagTitle', 'Engine Status')}: ${bridgeTxt} | ${undoTxt} | ${zh ? '快捷键' : 'Shortcut'}: Alt+Shift+T`;
+      ? zh ? '可撤回上一批' : 'Undo ready'
+      : zh ? '无上一批' : 'No undo';
+    els.diagBox.textContent = `${t('diagTitle', 'Engine Status')}: ${bridgeTxt}${decTxt} | ${undoTxt}`;
   }
 
   function renderAll() {
@@ -444,6 +457,14 @@
   els.searchInput.addEventListener('input', (ev) => {
     searchQuery = (ev.target.value || '').trim().toLowerCase();
     renderSnapshotsPanel();
+  });
+
+  els.btnReloadTab.addEventListener('click', async () => {
+    if (!activeYouTubeTabId) return;
+    try {
+      await chrome.tabs.reload(activeYouTubeTabId);
+      window.close();
+    } catch {}
   });
 
   els.btnOpenDrawer.addEventListener('click', async () => {

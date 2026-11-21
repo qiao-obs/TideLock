@@ -105,6 +105,7 @@ https://github.com/qiao-obs/TideLock
 
 | Version | Date | Changes | Status |
 |---------|------|---------|--------|
+| 2.1.0 | 2026-11-21 | Production YouTube 2026 fixes: desktop `richGridRowRenderer` recursive extraction & deduplicated stitching, intercept internal `params` on Home return without breaking topic chip clicks, 2026 camelCase DOM selectors (`ytLockupMetadataViewModelTitle`), self-healing grid observer hydration & `ytInitialData` / `<ytd-browse>.data` polling, 1-click Reload Tab banner for pre-existing YouTube tabs in Popup. | Draft |
 | 2.0.0 | 2026-11-21 | Full architectural upgrade: IndexedDB cross-reload Home feed persistence, 1-click Undo Accidental Refresh (previous feed replay), zero-reload native YouTube SPA navigation from Drawer/Popup, "Right beside what you just watched" neighbor shelf, multi-feed scroll anchoring (Home + Subscriptions + Search), bilingual CN/EN title sync & search (Immersive Translate + DeArrow compatible), scoped debounced MutationObserver with O(1) card skip, pure SVG UI, right-click Pin context menu, Alt+Shift+T shortcut, Markdown export, live engine diagnostics. | Draft |
 | 1.0.0 | 2026-11-21 | Initial release: automatic home feed lock, continuation stitching, scroll restore, watched badges, quick-pin queue, local snapshot drawer & popup, EN/zh_CN i18n. | Draft |
 

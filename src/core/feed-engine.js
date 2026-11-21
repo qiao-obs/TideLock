@@ -2,7 +2,8 @@
   'use strict';
 
   const DEFAULT_MAX_STITCHED = 200;
-  const RETURN_INTENT_TTL_MS = 10000;
+  const RETURN_INTENT_TTL_MS = 15000;
+  const CHIP_CLICK_TTL_MS = 4500;
 
   function safeClone(obj) {
     if (obj === null || obj === undefined) return obj;
@@ -75,6 +76,7 @@
       params: null,
       hasContinuation: false,
       continuation: null,
+      isHomeBrowse: false,
       isHomeInitial: false,
       isHomeChip: false,
       isContinuation: false,
@@ -123,6 +125,7 @@
       params,
       hasContinuation: Boolean(continuation),
       continuation,
+      isHomeBrowse: isHome && !continuation,
       isHomeInitial: isHome && !params && !continuation,
       isHomeChip: isHome && Boolean(params) && !continuation,
       isContinuation: Boolean(continuation),
@@ -134,9 +137,25 @@
     if (!state || !reqInfo) {
       return { intercept: false, reason: 'invalid_args' };
     }
-    if (!reqInfo.isHomeInitial) {
-      return { intercept: false, reason: 'not_home_initial' };
+    if (!reqInfo.isHomeBrowse) {
+      return { intercept: false, reason: 'not_home_browse' };
     }
+
+    // If user just clicked a topic chip within CHIP_CLICK_TTL_MS, pass through chip-filtered requests!
+    const recentChipClick =
+      Boolean(state.lastChipClickAt) && now - state.lastChipClickAt <= CHIP_CLICK_TTL_MS;
+    if (reqInfo.hasParams && recentChipClick) {
+      return { intercept: false, reason: 'explicit_chip_filter' };
+    }
+    // Also if user is already on Home with a non-initial params request and NOT returning from away, pass through
+    if (reqInfo.hasParams && !state.wasAwayFromHome && !state.undoReplayPending) {
+      const intentFresh =
+        state.returnIntentAt && now - state.returnIntentAt <= RETURN_INTENT_TTL_MS;
+      if (!intentFresh) {
+        return { intercept: false, reason: 'home_params_not_returning' };
+      }
+    }
+
     // Highest priority: explicit "Undo Refresh" replay of displaced previous Home feed
     if (state.undoReplayPending && state.hasCachedFeed) {
       return { intercept: true, reason: 'undo_replay' };
@@ -176,14 +195,36 @@
   function findRichGridContents(browseData) {
     if (!browseData || typeof browseData !== 'object') return null;
     const tabs = browseData?.contents?.twoColumnBrowseResultsRenderer?.tabs;
-    if (!Array.isArray(tabs)) return null;
-
-    for (const tab of tabs) {
-      const grid = tab?.tabRenderer?.content?.richGridRenderer;
-      if (grid && Array.isArray(grid.contents)) {
-        return { grid, contents: grid.contents };
+    if (Array.isArray(tabs)) {
+      for (const tab of tabs) {
+        const grid = tab?.tabRenderer?.content?.richGridRenderer;
+        if (grid && Array.isArray(grid.contents)) {
+          return { grid, contents: grid.contents };
+        }
       }
     }
+
+    // Fallback: reloadContinuationItemsCommand payload (some SPA browse responses use actions)
+    const actions = browseData.onResponseReceivedActions;
+    if (Array.isArray(actions)) {
+      for (const act of actions) {
+        const cmd = act?.reloadContinuationItemsCommand;
+        if (cmd && Array.isArray(cmd.continuationItems) && cmd.continuationItems.length > 0) {
+          return {
+            grid: {
+              get contents() {
+                return cmd.continuationItems;
+              },
+              set contents(v) {
+                cmd.continuationItems = v;
+              },
+            },
+            contents: cmd.continuationItems,
+          };
+        }
+      }
+    }
+
     return null;
   }
 
@@ -274,23 +315,26 @@
     if (content.lockupViewModel) {
       const lv = content.lockupViewModel;
       const contentType = lv.contentType || '';
-      if (
-        contentType &&
-        contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' &&
-        contentType !== 'LOCKUP_CONTENT_TYPE_SHORTS'
-      ) {
-        if (!lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId) {
-          return null;
-        }
-      }
-
       const watchEpId =
         lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
+      const reelEpId =
+        lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.reelWatchEndpoint?.videoId;
       const rawId =
         typeof lv.contentId === 'string' && /^[A-Za-z0-9_-]{11}$/.test(lv.contentId)
           ? lv.contentId
           : null;
-      const videoId = watchEpId || rawId;
+
+      if (
+        contentType &&
+        contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' &&
+        contentType !== 'LOCKUP_CONTENT_TYPE_SHORTS' &&
+        !watchEpId &&
+        !reelEpId
+      ) {
+        return null;
+      }
+
+      const videoId = watchEpId || reelEpId || rawId;
       if (!videoId) return null;
 
       const metaVm = lv?.metadata?.lockupMetadataViewModel;
@@ -338,7 +382,7 @@
           ? sources[Math.min(1, sources.length - 1)]?.url || sources[0]?.url
           : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
 
-      const isShort = contentType === 'LOCKUP_CONTENT_TYPE_SHORTS';
+      const isShort = contentType === 'LOCKUP_CONTENT_TYPE_SHORTS' || Boolean(reelEpId);
       return {
         videoId,
         title,
@@ -385,26 +429,63 @@
     return null;
   }
 
+  // Recursively collect cards from flat richItemRenderer, desktop richGridRowRenderer, and richSectionRenderer shelves
+  function extractCardsFromItemNode(node, outCards, seenIds, maxItems) {
+    if (!node || typeof node !== 'object' || outCards.length >= maxItems) return;
+
+    if (node.richItemRenderer) {
+      const card = extractCardFromRichItem(node);
+      if (card && !seenIds.has(card.videoId)) {
+        seenIds.add(card.videoId);
+        outCards.push(card);
+      }
+      return;
+    }
+
+    if (Array.isArray(node.richGridRowRenderer?.contents)) {
+      for (const child of node.richGridRowRenderer.contents) {
+        extractCardsFromItemNode(child, outCards, seenIds, maxItems);
+        if (outCards.length >= maxItems) return;
+      }
+      return;
+    }
+
+    const shelfContents = node.richSectionRenderer?.content?.richShelfRenderer?.contents;
+    if (Array.isArray(shelfContents)) {
+      for (const child of shelfContents) {
+        extractCardsFromItemNode(child, outCards, seenIds, maxItems);
+        if (outCards.length >= maxItems) return;
+      }
+    }
+  }
+
+  function extractItemVideoIds(item) {
+    const cards = [];
+    const seen = new Set();
+    extractCardsFromItemNode(item, cards, seen, 32);
+    return cards.map((c) => c.videoId);
+  }
+
   function extractItemVideoId(item) {
-    const card = extractCardFromRichItem(item);
-    return card ? card.videoId : null;
+    const ids = extractItemVideoIds(item);
+    return ids.length > 0 ? ids[0] : null;
+  }
+
+  function extractSnapshotCardsFromItems(items, maxItems = DEFAULT_MAX_STITCHED) {
+    if (!Array.isArray(items)) return [];
+    const seen = new Set();
+    const cards = [];
+    for (const item of items) {
+      extractCardsFromItemNode(item, cards, seen, maxItems);
+      if (cards.length >= maxItems) break;
+    }
+    return cards;
   }
 
   function extractSnapshotCardsFromBrowse(browseData, maxItems = DEFAULT_MAX_STITCHED) {
     const found = findRichGridContents(browseData);
     if (!found) return [];
-    const seen = new Set();
-    const cards = [];
-
-    for (const item of found.contents) {
-      const card = extractCardFromRichItem(item);
-      if (card && !seen.has(card.videoId)) {
-        seen.add(card.videoId);
-        cards.push(card);
-        if (cards.length >= maxItems) break;
-      }
-    }
-    return cards;
+    return extractSnapshotCardsFromItems(found.contents, maxItems);
   }
 
   function stitchHomeResponse(
@@ -428,10 +509,11 @@
         baseContinuation = item;
         continue;
       }
-      const vid = extractItemVideoId(item);
-      if (vid) {
-        if (seenVideoIds.has(vid)) continue;
-        seenVideoIds.add(vid);
+      const vids = extractItemVideoIds(item);
+      if (vids.length > 0) {
+        const allSeen = vids.every((id) => seenVideoIds.has(id));
+        if (allSeen) continue;
+        for (const id of vids) seenVideoIds.add(id);
       }
       merged.push(item);
     }
@@ -440,10 +522,11 @@
       for (const item of extraItems) {
         if (!item || item.continuationItemRenderer) continue;
         if (merged.length >= maxItems) break;
-        const vid = extractItemVideoId(item);
-        if (vid) {
-          if (seenVideoIds.has(vid)) continue;
-          seenVideoIds.add(vid);
+        const vids = extractItemVideoIds(item);
+        if (vids.length > 0) {
+          const allSeen = vids.every((id) => seenVideoIds.has(id));
+          if (allSeen) continue;
+          for (const id of vids) seenVideoIds.add(id);
         }
         merged.push(safeClone(item));
       }
@@ -483,8 +566,10 @@
         displayTitle: incoming.displayTitle || incoming.title || '',
       };
     }
-    const originalTitle = prev.originalTitle || prev.title || incoming.originalTitle || incoming.title || '';
-    const displayTitle = incoming.displayTitle || incoming.title || prev.displayTitle || prev.title || '';
+    const originalTitle =
+      prev.originalTitle || prev.title || incoming.originalTitle || incoming.title || '';
+    const displayTitle =
+      incoming.displayTitle || incoming.title || prev.displayTitle || prev.title || '';
     return {
       ...prev,
       ...incoming,
@@ -547,7 +632,12 @@
   }
 
   function enrichSnapshotWithDomCards(snapshot, domCards) {
-    if (!snapshot || !Array.isArray(snapshot.videos) || !Array.isArray(domCards) || domCards.length === 0) {
+    if (
+      !snapshot ||
+      !Array.isArray(snapshot.videos) ||
+      !Array.isArray(domCards) ||
+      domCards.length === 0
+    ) {
       return { snapshot, changed: false };
     }
     const byId = new Map(snapshot.videos.map((v) => [v.videoId, v]));
@@ -621,7 +711,8 @@
       if (filterMode === 'unwatched' && isWatched) return false;
       if (filterMode === 'watched' && !isWatched) return false;
       if (q) {
-        const hay = `${v.displayTitle || ''} ${v.originalTitle || ''} ${v.title || ''} ${v.channel || ''}`.toLowerCase();
+        const hay =
+          `${v.displayTitle || ''} ${v.originalTitle || ''} ${v.title || ''} ${v.channel || ''}`.toLowerCase();
         if (!hay.includes(q)) return false;
       }
       return true;
@@ -644,6 +735,7 @@
   const api = {
     DEFAULT_MAX_STITCHED,
     RETURN_INTENT_TTL_MS,
+    CHIP_CLICK_TTL_MS,
     safeClone,
     extractText,
     extractVideoIdFromUrl,
@@ -655,7 +747,9 @@
     extractContinuationItems,
     isAdItem,
     extractCardFromRichItem,
+    extractItemVideoIds,
     extractItemVideoId,
+    extractSnapshotCardsFromItems,
     extractSnapshotCardsFromBrowse,
     stitchHomeResponse,
     computeOverlapRatio,
