@@ -2,6 +2,8 @@
   'use strict';
 
   const { STORAGE_KEYS, DEFAULT_SETTINGS, DEFAULT_STATS, MSG } = globalThis.__TideLockDefaults;
+  const E = globalThis.__TideLockEngine;
+  const I = globalThis.__TideLockIcons;
 
   function t(key, fallback) {
     try {
@@ -43,6 +45,7 @@
   let filterMode = 'all';
   let searchQuery = '';
   let activeYouTubeTabId = null;
+  let tabState = null;
 
   const els = {
     statusLabel: document.getElementById('status-label'),
@@ -55,6 +58,7 @@
     labelStatPinned: document.getElementById('label-stat-pinned'),
     ytActions: document.getElementById('yt-actions'),
     btnOpenDrawer: document.getElementById('btn-open-drawer'),
+    btnUndoRefresh: document.getElementById('btn-undo-refresh'),
     btnRefreshFeed: document.getElementById('btn-refresh-feed'),
     tabSnapshots: document.getElementById('tab-snapshots'),
     tabPinned: document.getElementById('tab-pinned'),
@@ -64,12 +68,26 @@
     panelSettings: document.getElementById('panel-settings'),
     snapshotPills: document.getElementById('snapshot-pills'),
     filterPills: document.getElementById('filter-pills'),
+    btnCopySnapMd: document.getElementById('btn-copy-snap-md'),
     searchInput: document.getElementById('search-input'),
     snapshotList: document.getElementById('snapshot-list'),
+    pinnedBar: document.getElementById('pinned-bar'),
+    pinnedHint: document.getElementById('pinned-hint'),
+    btnCopyPinMd: document.getElementById('btn-copy-pin-md'),
     pinnedList: document.getElementById('pinned-list'),
     settingsList: document.getElementById('settings-list'),
+    diagBox: document.getElementById('diag-box'),
+    btnClearWatched: document.getElementById('btn-clear-watched'),
     btnClearSnapshots: document.getElementById('btn-clear-snapshots'),
   };
+
+  function setButtonContent(btn, iconName, labelText) {
+    btn.textContent = '';
+    if (iconName) btn.appendChild(I.createSvgIcon(iconName, 13));
+    const span = document.createElement('span');
+    span.textContent = labelText;
+    btn.appendChild(span);
+  }
 
   async function detectActiveYouTubeTab() {
     try {
@@ -77,12 +95,19 @@
       if (tab && tab.id && typeof tab.url === 'string' && tab.url.startsWith('https://www.youtube.com/')) {
         activeYouTubeTabId = tab.id;
         els.ytActions.hidden = false;
+        try {
+          tabState = await chrome.tabs.sendMessage(tab.id, { type: MSG.GET_TAB_STATE });
+        } catch {
+          tabState = null;
+        }
       } else {
         activeYouTubeTabId = null;
+        tabState = null;
         els.ytActions.hidden = true;
       }
     } catch {
       activeYouTubeTabId = null;
+      tabState = null;
       els.ytActions.hidden = true;
     }
   }
@@ -115,7 +140,7 @@
     if (exists) {
       pinned = pinned.filter((p) => p.videoId !== video.videoId);
     } else {
-      pinned = [{ ...video, pinnedAt: Date.now() }, ...pinned].slice(0, 60);
+      pinned = [{ ...video, pinnedAt: Date.now() }, ...pinned].slice(0, 80);
     }
     await chrome.storage.local.set({ [STORAGE_KEYS.PINNED]: pinned });
     renderAll();
@@ -132,7 +157,6 @@
         window.close();
         return;
       } catch {
-        // Fallback to updating tab directly
         await chrome.tabs.update(activeYouTubeTabId, { url: video.url });
         window.close();
         return;
@@ -140,6 +164,17 @@
     }
     await chrome.tabs.create({ url: video.url });
     window.close();
+  }
+
+  async function copyMarkdownWithFeedback(btn, videos, heading) {
+    const md = E.formatVideosAsMarkdown(videos, heading);
+    if (!md) return;
+    try {
+      await navigator.clipboard.writeText(md);
+      const orig = btn.title;
+      setButtonContent(btn, 'check', isZh() ? '已复制' : 'Copied');
+      setTimeout(() => setButtonContent(btn, 'copy', orig || 'MD'), 1400);
+    } catch {}
   }
 
   function renderHeaderAndStats() {
@@ -155,12 +190,21 @@
 
     els.labelStatBlocked.textContent = t('statBlocked', 'Refreshes blocked');
     els.labelStatSnapshots.textContent = t('statSnapshots', 'Saved snapshots');
-    els.labelStatPinned.textContent = t('statPinned', 'Pinned videos');
+    els.labelStatPinned.textContent = t('statPinned', 'Pinned queue');
 
-    els.btnOpenDrawer.textContent = t('btnOpenDrawer', 'Open on Page');
-    els.btnRefreshFeed.textContent = t('btnRefreshFeed', 'Refresh Feed');
+    setButtonContent(els.btnOpenDrawer, 'layers', t('btnOpenDrawer', 'Open Drawer'));
+    setButtonContent(els.btnUndoRefresh, 'undo', t('btnUndoRefresh', 'Undo'));
+    setButtonContent(els.btnRefreshFeed, 'refresh', t('btnRefreshFeed', 'Fresh Feed'));
+    els.btnUndoRefresh.hidden = !(tabState && tabState.hasPreviousFeed);
+
+    els.btnCopySnapMd.title = 'MD';
+    setButtonContent(els.btnCopySnapMd, 'copy', 'MD');
+    els.btnCopyPinMd.title = t('btnCopyMarkdown', 'Copy Markdown');
+    setButtonContent(els.btnCopyPinMd, 'copy', t('btnCopyMarkdown', 'Copy Markdown'));
+
+    els.btnClearWatched.textContent = t('btnClearWatched', 'Reset Watched');
     els.btnClearSnapshots.textContent = t('btnClearSnapshots', 'Clear Snapshots');
-    els.searchInput.placeholder = t('searchPlaceholder', 'Search title or channel...');
+    els.searchInput.placeholder = t('searchPlaceholder', 'Search title (CN/EN) or channel...');
 
     els.tabSnapshots.textContent = `${t('tabSnapshots', 'Snapshots')} (${snapshots.length})`;
     els.tabPinned.textContent = `${t('tabPinned', 'Pinned')} (${pinned.length})`;
@@ -204,7 +248,7 @@
     meta.className = 'v-meta';
     const title = document.createElement('div');
     title.className = 'v-title';
-    title.textContent = video.title;
+    title.textContent = video.displayTitle || video.title || video.videoId;
     meta.appendChild(title);
 
     const subText = [video.channel, video.views].filter(Boolean).join(' · ');
@@ -225,17 +269,26 @@
     const pinBtn = document.createElement('button');
     pinBtn.type = 'button';
     pinBtn.className = 'pin-icon-btn';
-    pinBtn.textContent = '📌';
     pinBtn.setAttribute('data-pinned', isPinned ? 'true' : 'false');
+    pinBtn.appendChild(I.createSvgIcon('pin', 14, { filled: isPinned }));
     pinBtn.addEventListener('click', (ev) => {
       ev.stopPropagation();
-      togglePin(video);
+      void togglePin(video);
     });
 
     card.appendChild(thumbWrap);
     card.appendChild(meta);
     card.appendChild(pinBtn);
     return card;
+  }
+
+  function getFilteredSnapshotVideos() {
+    const currentSnap = snapshots[selectedSnapIdx];
+    return E.filterVideos(currentSnap ? currentSnap.videos : [], {
+      filterMode,
+      searchQuery,
+      watchedSet,
+    });
   }
 
   function renderSnapshotsPanel() {
@@ -276,18 +329,7 @@
     }
 
     els.snapshotList.textContent = '';
-    const currentSnap = snapshots[selectedSnapIdx];
-    const list = currentSnap ? currentSnap.videos : [];
-    const filtered = list.filter((v) => {
-      const isWatched = watchedSet.has(v.videoId);
-      if (filterMode === 'unwatched' && isWatched) return false;
-      if (filterMode === 'watched' && !isWatched) return false;
-      if (searchQuery) {
-        const hay = `${v.title || ''} ${v.channel || ''}`.toLowerCase();
-        if (!hay.includes(searchQuery)) return false;
-      }
-      return true;
-    });
+    const filtered = getFilteredSnapshotVideos();
 
     if (filtered.length === 0) {
       const empty = document.createElement('div');
@@ -304,6 +346,11 @@
 
   function renderPinnedPanel() {
     els.pinnedList.textContent = '';
+    els.pinnedBar.hidden = pinned.length === 0;
+    els.pinnedHint.textContent = isZh()
+      ? `共 ${pinned.length} 个待看视频 · 支持右键任意链接暂存`
+      : `${pinned.length} pinned · Right-click any YouTube link to pin`;
+
     if (pinned.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'empty-state';
@@ -322,6 +369,7 @@
       { key: 'enabled', title: 'settingEnabled', desc: 'settingEnabledDesc' },
       { key: 'preserveOnLogoFromWatch', title: 'settingLogoPreserve', desc: 'settingLogoPreserveDesc' },
       { key: 'restoreScroll', title: 'settingRestoreScroll', desc: 'settingRestoreScrollDesc' },
+      { key: 'anchorSubAndSearch', title: 'settingMultiFeed', desc: 'settingMultiFeedDesc' },
       { key: 'markWatched', title: 'settingMarkWatched', desc: 'settingMarkWatchedDesc' },
       { key: 'showFloatingDock', title: 'settingShowDock', desc: 'settingShowDockDesc' },
       { key: 'showToast', title: 'settingShowToast', desc: 'settingShowToastDesc' },
@@ -347,7 +395,7 @@
       const input = document.createElement('input');
       input.type = 'checkbox';
       input.checked = Boolean(settings[item.key]);
-      input.addEventListener('change', () => updateSettings({ [item.key]: input.checked }));
+      input.addEventListener('change', () => void updateSettings({ [item.key]: input.checked }));
       const slider = document.createElement('span');
       slider.className = 'slider';
       label.appendChild(input);
@@ -357,6 +405,20 @@
       row.appendChild(label);
       els.settingsList.appendChild(row);
     }
+
+    // Live Engine Diagnostics
+    const zh = isZh();
+    const bridgeTxt = tabState
+      ? zh
+        ? `已连接 · 缓存 ${tabState.cardCount || 0} 条${tabState.hydratedFromIdb ? ' (IDB 恢复)' : ''}`
+        : `Connected · ${tabState.cardCount || 0} cached${tabState.hydratedFromIdb ? ' (IDB)' : ''}`
+      : zh
+        ? '未在 YouTube 标签页'
+        : 'Open YouTube to inspect live cache';
+    const undoTxt = tabState?.hasPreviousFeed
+      ? zh ? '可撤回上一批首页' : 'Undo slot ready'
+      : zh ? '暂无上一批缓存' : 'No displaced feed';
+    els.diagBox.textContent = `${t('diagTitle', 'Engine Status')}: ${bridgeTxt} | ${undoTxt} | ${zh ? '快捷键' : 'Shortcut'}: Alt+Shift+T`;
   }
 
   function renderAll() {
@@ -369,7 +431,7 @@
 
   // ---- Wire Events ----
   els.masterToggle.addEventListener('change', () => {
-    updateSettings({ enabled: els.masterToggle.checked });
+    void updateSettings({ enabled: els.masterToggle.checked });
   });
 
   for (const btn of [els.tabSnapshots, els.tabPinned, els.tabSettings]) {
@@ -392,12 +454,35 @@
     } catch {}
   });
 
+  els.btnUndoRefresh.addEventListener('click', async () => {
+    if (!activeYouTubeTabId) return;
+    try {
+      await chrome.tabs.sendMessage(activeYouTubeTabId, { type: MSG.TRIGGER_UNDO });
+      window.close();
+    } catch {}
+  });
+
   els.btnRefreshFeed.addEventListener('click', async () => {
     if (!activeYouTubeTabId) return;
     try {
       await chrome.tabs.sendMessage(activeYouTubeTabId, { type: MSG.TRIGGER_REFRESH });
       window.close();
     } catch {}
+  });
+
+  els.btnCopySnapMd.addEventListener('click', () => {
+    const list = getFilteredSnapshotVideos();
+    void copyMarkdownWithFeedback(els.btnCopySnapMd, list, `TideLock Home Snapshot (${list.length})`);
+  });
+
+  els.btnCopyPinMd.addEventListener('click', () => {
+    void copyMarkdownWithFeedback(els.btnCopyPinMd, pinned, `TideLock Pinned Queue (${pinned.length})`);
+  });
+
+  els.btnClearWatched.addEventListener('click', async () => {
+    watchedSet = new Set();
+    await chrome.storage.local.set({ [STORAGE_KEYS.WATCHED]: [] });
+    renderAll();
   });
 
   els.btnClearSnapshots.addEventListener('click', async () => {

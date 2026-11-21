@@ -22,7 +22,9 @@ jobs:
         run: |
           node --check src/core/defaults.js
           node --check src/core/feed-engine.js
+          node --check src/core/svg-icons.js
           node --check src/background/service-worker.js
+          node --check src/content/idb-cache.js
           node --check src/content/page-bridge.js
           node --check src/content/content-main.js
           node --check src/popup/popup.js

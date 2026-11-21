@@ -12,7 +12,7 @@
         <div class="brand">
           <img class="logo" src="../../icons/icon-32.png" alt="TideLock" width="24" height="24" />
           <div class="brand-text">
-            <h1 class="title">TideLock</h1>
+            <h1 class="title">TideLock <span class="ver">v2</span></h1>
             <span class="status" id="status-label"></span>
           </div>
         </div>
@@ -39,6 +39,7 @@
 
       <div class="quick-actions" id="yt-actions" hidden>
         <button type="button" class="btn btn-primary" id="btn-open-drawer"></button>
+        <button type="button" class="btn btn-amber" id="btn-undo-refresh" hidden></button>
         <button type="button" class="btn btn-secondary" id="btn-refresh-feed"></button>
       </div>
 
@@ -51,25 +52,36 @@
       <main class="panel" id="panel-snapshots">
         <div class="toolbar">
           <div class="pill-row" id="snapshot-pills"></div>
-          <div class="pill-row" id="filter-pills"></div>
+          <div class="filter-bar">
+            <div class="pill-row" id="filter-pills"></div>
+            <button type="button" class="btn-chip" id="btn-copy-snap-md"></button>
+          </div>
           <input type="search" class="search-input" id="search-input" />
         </div>
         <div class="video-list" id="snapshot-list"></div>
       </main>
 
       <main class="panel" id="panel-pinned" hidden>
+        <div class="pinned-bar" id="pinned-bar" hidden>
+          <span class="pinned-hint" id="pinned-hint"></span>
+          <button type="button" class="btn-chip" id="btn-copy-pin-md"></button>
+        </div>
         <div class="video-list" id="pinned-list"></div>
       </main>
 
       <main class="panel" id="panel-settings" hidden>
         <div class="settings-list" id="settings-list"></div>
+        <div class="diag-box" id="diag-box"></div>
         <div class="settings-footer">
+          <button type="button" class="btn btn-secondary" id="btn-clear-watched"></button>
           <button type="button" class="btn btn-danger-ghost" id="btn-clear-snapshots"></button>
         </div>
       </main>
     </div>
 
     <script src="../core/defaults.js"></script>
+    <script src="../core/feed-engine.js"></script>
+    <script src="../core/svg-icons.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

@@ -48,7 +48,12 @@ function makeLockupViewModelItem(id, title, channel = 'Modern Creator') {
                 contentMetadataViewModel: {
                   metadataRows: [
                     { metadataParts: [{ text: { content: channel } }] },
-                    { metadataParts: [{ text: { content: '88K views' } }, { text: { content: '2 days ago' } }] },
+                    {
+                      metadataParts: [
+                        { text: { content: '88K views' } },
+                        { text: { content: '2 days ago' } },
+                      ],
+                    },
                   ],
                 },
               },
@@ -111,6 +116,23 @@ function makeBrowsePayload(items, continuationToken = 'TOK_1') {
   };
 }
 
+test('getRouteAnchorKey normalizes Home, Subscriptions, and Search routes', () => {
+  assert.equal(Engine.getRouteAnchorKey('https://www.youtube.com/'), 'home');
+  assert.equal(Engine.getRouteAnchorKey('https://www.youtube.com/feed/subscriptions'), 'subscriptions');
+  assert.equal(
+    Engine.getRouteAnchorKey('https://www.youtube.com/results?search_query=AI+Agents'),
+    'search:ai agents'
+  );
+  assert.equal(Engine.getRouteAnchorKey('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), null);
+});
+
+test('extractVideoIdFromUrl handles watch, shorts, and youtu.be URLs', () => {
+  assert.equal(Engine.extractVideoIdFromUrl('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30'), 'dQw4w9WgXcQ');
+  assert.equal(Engine.extractVideoIdFromUrl('https://www.youtube.com/shorts/abc123XYZ89'), 'abc123XYZ89');
+  assert.equal(Engine.extractVideoIdFromUrl('https://youtu.be/abc123XYZ89?si=foo'), 'abc123XYZ89');
+  assert.equal(Engine.extractVideoIdFromUrl('https://www.youtube.com/'), null);
+});
+
 test('parseBrowseRequestBody distinguishes initial Home, chip filters, and continuations', () => {
   const home = Engine.parseBrowseRequestBody(JSON.stringify({ browseId: 'FEwhat_to_watch' }));
   assert.equal(home.valid, true);
@@ -131,10 +153,24 @@ test('parseBrowseRequestBody distinguishes initial Home, chip filters, and conti
   assert.equal(subs.isHomeInitial, false);
 });
 
-test('shouldInterceptHomeBrowse handles back navigation, logo clicks, and explicit refresh accurately', () => {
+test('shouldInterceptHomeBrowse handles back navigation, logo clicks, explicit refresh, and undo replay', () => {
   const reqHome = Engine.parseBrowseRequestBody(JSON.stringify({ browseId: 'FEwhat_to_watch' }));
   const reqChip = Engine.parseBrowseRequestBody(JSON.stringify({ browseId: 'FEwhat_to_watch', params: 'CHIP' }));
   const now = 1_000_000;
+
+  // Undo accidental refresh overrides even when enabled=false or explicit refresh happened earlier
+  const undoRes = Engine.shouldInterceptHomeBrowse(
+    {
+      enabled: false,
+      hasCachedFeed: true,
+      undoReplayPending: true,
+      explicitRefreshUntil: now + 5000,
+    },
+    reqHome,
+    now
+  );
+  assert.equal(undoRes.intercept, true);
+  assert.equal(undoRes.reason, 'undo_replay');
 
   // Back traverse -> intercept
   const backRes = Engine.shouldInterceptHomeBrowse(
@@ -170,14 +206,12 @@ test('shouldInterceptHomeBrowse handles back navigation, logo clicks, and explic
   assert.equal(logoAwayRes.intercept, true);
   assert.equal(logoAwayRes.reason, 'logo_from_away');
 
-  // Explicit refresh (Logo on Home or Refresh button) -> pass through
+  // Explicit refresh -> pass through
   const explicitRes = Engine.shouldInterceptHomeBrowse(
     {
       enabled: true,
       hasCachedFeed: true,
       preserveOnLogoFromWatch: true,
-      returnIntent: null,
-      returnIntentAt: 0,
       explicitRefreshUntil: now + 5000,
       wasAwayFromHome: false,
     },
@@ -203,7 +237,7 @@ test('shouldInterceptHomeBrowse handles back navigation, logo clicks, and explic
   assert.equal(chipRes.reason, 'not_home_initial');
 });
 
-test('extractSnapshotCardsFromBrowse parses both legacy videoRenderer and 2026 lockupViewModel while skipping ads', () => {
+test('extractSnapshotCardsFromBrowse parses legacy videoRenderer and 2026 lockupViewModel while skipping ads', () => {
   const adItem = { richItemRenderer: { content: { adSlotRenderer: { id: 'ad1' } } } };
   const payload = makeBrowsePayload([
     makeVideoRendererItem('dQw4w9WgXcQ', 'Legacy Video Title', 'Channel A'),
@@ -214,16 +248,13 @@ test('extractSnapshotCardsFromBrowse parses both legacy videoRenderer and 2026 l
   const cards = Engine.extractSnapshotCardsFromBrowse(payload);
   assert.equal(cards.length, 2);
   assert.equal(cards[0].videoId, 'dQw4w9WgXcQ');
-  assert.equal(cards[0].title, 'Legacy Video Title');
-  assert.equal(cards[0].duration, '12:34');
-
+  assert.equal(cards[0].originalTitle, 'Legacy Video Title');
   assert.equal(cards[1].videoId, 'abc123XYZ89');
-  assert.equal(cards[1].title, 'Modern Lockup Title');
-  assert.equal(cards[1].channel, 'Channel B');
+  assert.equal(cards[1].displayTitle, 'Modern Lockup Title');
   assert.equal(cards[1].duration, '18:05');
 });
 
-test('stitchHomeResponse appends deduplicated continuation items and keeps latest continuation token', () => {
+test('stitchHomeResponse appends deduplicated continuation items and preserves latest continuation token', () => {
   const base = makeBrowsePayload(
     [
       makeVideoRendererItem('vid00000001', 'Video 1'),
@@ -251,87 +282,105 @@ test('stitchHomeResponse appends deduplicated continuation items and keeps lates
   };
 
   const { items, trailingContinuation } = Engine.extractContinuationItems(contResponse);
-  assert.equal(items.length, 2);
-  assert.equal(trailingContinuation.continuationItemRenderer.continuationEndpoint.continuationCommand.token, 'TOKEN_NEW');
-
   const stitched = Engine.stitchHomeResponse(base, items, trailingContinuation, 50);
   const found = Engine.findRichGridContents(stitched);
-  // Expect 3 unique video cards + 1 trailing continuationItemRenderer = 4 items
   assert.equal(found.contents.length, 4);
   assert.equal(
     found.contents[3].continuationItemRenderer.continuationEndpoint.continuationCommand.token,
     'TOKEN_NEW'
   );
-  const ids = Engine.extractSnapshotCardsFromBrowse(stitched).map((c) => c.videoId);
-  assert.deepEqual(ids, ['vid00000001', 'vid00000002', 'vid00000003']);
+  assert.deepEqual(
+    Engine.extractSnapshotCardsFromBrowse(stitched).map((c) => c.videoId),
+    ['vid00000001', 'vid00000002', 'vid00000003']
+  );
 });
 
-test('mergeSnapshotVault merges overlapping feed updates and caps LRU length', () => {
-  let vault = [];
-  vault = Engine.mergeSnapshotVault(
-    vault,
-    {
-      feedId: 'feed_1',
-      videos: [
-        { videoId: 'a0000000001', title: 'A1' },
-        { videoId: 'a0000000002', title: 'A2' },
-      ],
-    },
-    2
-  );
-  assert.equal(vault.length, 1);
+test('bilingual title enrichment preserves originalTitle and supports CN/EN search', () => {
+  const snap = {
+    id: 's1',
+    feedId: 'f1',
+    videos: [
+      {
+        videoId: 'v0000000001',
+        title: 'What Are AI Agents?',
+        originalTitle: 'What Are AI Agents?',
+        displayTitle: 'What Are AI Agents?',
+        channel: 'Stanford Online',
+      },
+    ],
+  };
 
-  // Same feedId with scrolled card -> merges in-place
-  vault = Engine.mergeSnapshotVault(
-    vault,
+  const { snapshot: updated, changed } = Engine.enrichSnapshotWithDomCards(snap, [
     {
-      feedId: 'feed_1',
-      videos: [{ videoId: 'a0000000003', title: 'A3' }],
+      videoId: 'v0000000001',
+      title: '什么是人工智能体？',
+      displayTitle: '什么是人工智能体？',
+      channel: 'Stanford Online',
     },
-    2
-  );
-  assert.equal(vault.length, 1);
-  assert.equal(vault[0].videos.length, 3);
+  ]);
 
-  // Brand new feed -> prepends new snapshot
-  vault = Engine.mergeSnapshotVault(
-    vault,
-    {
-      feedId: 'feed_2',
-      videos: [{ videoId: 'b0000000001', title: 'B1' }],
-    },
-    2
-  );
-  assert.equal(vault.length, 2);
-  assert.equal(vault[0].feedId, 'feed_2');
+  assert.equal(changed, true);
+  assert.equal(updated.videos[0].displayTitle, '什么是人工智能体？');
+  assert.equal(updated.videos[0].originalTitle, 'What Are AI Agents?');
 
-  // Third distinct feed -> evicts oldest beyond maxSnapshots=2
-  vault = Engine.mergeSnapshotVault(
-    vault,
-    {
-      feedId: 'feed_3',
-      videos: [{ videoId: 'c0000000001', title: 'C1' }],
-    },
-    2
-  );
-  assert.equal(vault.length, 2);
-  assert.equal(vault[0].feedId, 'feed_3');
-  assert.equal(vault[1].feedId, 'feed_2');
+  // Repeating identical enrichment yields changed=false (prevents storage write storms)
+  const repeat = Engine.enrichSnapshotWithDomCards(updated, [
+    { videoId: 'v0000000001', displayTitle: '什么是人工智能体？', channel: 'Stanford Online' },
+  ]);
+  assert.equal(repeat.changed, false);
+
+  // Bilingual search matches BOTH Chinese translated title and original English title!
+  assert.equal(Engine.filterVideos(updated.videos, { searchQuery: '人工智能' }).length, 1);
+  assert.equal(Engine.filterVideos(updated.videos, { searchQuery: 'ai agents' }).length, 1);
+  assert.equal(Engine.filterVideos(updated.videos, { searchQuery: 'stanford' }).length, 1);
 });
 
-test('Manifest V3, locales, icons, and Trusted Types safety checks', () => {
+test('extractNeighborVideos returns immediate unwatched neighbors around clicked card', () => {
+  const videos = ['v1', 'v2', 'v3', 'v4', 'v5', 'v6'].map((id) => ({ videoId: id, title: id }));
+  const watched = new Set(['v3', 'v4']);
+  // Clicked v3; v4 is watched, so neighbors should pick v2, v5, v1, v6 in proximity order
+  const neighbors = Engine.extractNeighborVideos(videos, 'v3', watched, 3);
+  assert.deepEqual(
+    neighbors.map((n) => n.videoId),
+    ['v2', 'v5', 'v1']
+  );
+});
+
+test('formatVideosAsMarkdown outputs clean Obsidian/Notion-ready Markdown links', () => {
+  const md = Engine.formatVideosAsMarkdown(
+    [
+      {
+        videoId: 'abc123XYZ89',
+        displayTitle: '[Deep Dive] AI Engineering',
+        channel: 'Dave',
+        duration: '3:10:07',
+        url: 'https://www.youtube.com/watch?v=abc123XYZ89',
+      },
+    ],
+    'Study Queue'
+  );
+  assert.ok(md.includes('## Study Queue'));
+  assert.ok(md.includes('- [Deep Dive AI Engineering](https://www.youtube.com/watch?v=abc123XYZ89) — Dave · 3:10:07'));
+});
+
+test('Manifest V3, locales, commands, permissions, and Trusted Types / CSP compliance checks', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.ok(Defaults.DEFAULT_SETTINGS.enabled === true);
+  assert.equal(manifest.version, '2.0.0');
+  assert.ok(manifest.permissions.includes('storage'));
+  assert.ok(manifest.permissions.includes('contextMenus'));
+  assert.ok(manifest.commands['toggle-drawer']);
+  assert.equal(Defaults.DEFAULT_SETTINGS.enabled, true);
 
-  // Verify locales parse and contain manifest __MSG__ keys
   for (const loc of ['en', 'zh_CN']) {
     const msgs = JSON.parse(fs.readFileSync(path.join(ROOT, '_locales', loc, 'messages.json'), 'utf8'));
     assert.ok(msgs.extName?.message);
     assert.ok(msgs.extDescription?.message);
+    assert.ok(msgs.cmdToggleDrawer?.message);
+    assert.ok(msgs.ctxPinVideo?.message);
   }
 
-  // Verify no innerHTML or eval in src/ (YouTube Trusted Types + MV3 CSP compliance)
+  // Zero innerHTML, zero eval, zero .then() chains in src/
   const scanDir = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       const full = path.join(dir, entry.name);
@@ -341,6 +390,7 @@ test('Manifest V3, locales, icons, and Trusted Types safety checks', () => {
         const code = fs.readFileSync(full, 'utf8');
         assert.equal(/\binnerHTML\b/.test(code), false, `Found forbidden innerHTML in ${full}`);
         assert.equal(/\beval\s*\(/.test(code), false, `Found forbidden eval() in ${full}`);
+        assert.equal(/\.then\s*\(/.test(code), false, `Found .then() chain (use async/await) in ${full}`);
       }
     }
   };

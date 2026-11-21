@@ -6,7 +6,8 @@
 
   const D = globalThis.__TideLockDefaults;
   const E = globalThis.__TideLockEngine;
-  if (!D || !E) return;
+  const I = globalThis.__TideLockIcons;
+  if (!D || !E || !I) return;
 
   const { STORAGE_KEYS, DEFAULT_SETTINGS, DEFAULT_STATS, BRIDGE_CHANNEL, MSG } = D;
 
@@ -46,15 +47,25 @@
   let snapshots = [];
   let pinned = [];
   let watchedSet = new Set();
+  let routeAnchors = {}; // { home: { scrollY, videoId, savedAt }, subscriptions: ..., 'search:...': ... }
+  let bridgeStatus = {
+    enabled: true,
+    hasCachedFeed: false,
+    hasPreviousFeed: false,
+    hydratedFromIdb: false,
+    cardCount: 0,
+    isHome: E.isHomePath(window.location.pathname),
+  };
 
   let currentFeedId = null;
-  let liveHomeScrollY = 0;
-  let savedAnchor = { scrollY: 0, videoId: null, savedAt: 0 };
+  let liveRouteScrollY = {};
   let scrollRafPending = false;
-  let decorateScheduled = false;
+  let decorateTimer = null;
   let userCancelledScrollRestore = false;
+  let activeGridObserver = null;
+  let observedContainer = null;
 
-  // UI state inside Shadow DOM
+  // Shadow DOM UI handles
   let shadowRoot = null;
   let uiHost = null;
   let dockEl = null;
@@ -77,12 +88,10 @@
         },
         window.location.origin
       );
-    } catch {
-      // Ignore if window unavailable
-    }
+    } catch {}
   }
 
-  // ---- Storage Helpers ----
+  // ---- Storage Operations ----
   async function loadAllState() {
     try {
       const data = await chrome.storage.local.get([
@@ -91,26 +100,25 @@
         STORAGE_KEYS.PINNED,
         STORAGE_KEYS.WATCHED,
         STORAGE_KEYS.STATS,
-        STORAGE_KEYS.SCROLL_STATE,
+        STORAGE_KEYS.ROUTE_ANCHORS,
       ]);
       settings = { ...DEFAULT_SETTINGS, ...(data[STORAGE_KEYS.SETTINGS] || {}) };
       stats = { ...DEFAULT_STATS, ...(data[STORAGE_KEYS.STATS] || {}) };
       snapshots = Array.isArray(data[STORAGE_KEYS.SNAPSHOTS]) ? data[STORAGE_KEYS.SNAPSHOTS] : [];
       pinned = Array.isArray(data[STORAGE_KEYS.PINNED]) ? data[STORAGE_KEYS.PINNED] : [];
-      const watchedArr = Array.isArray(data[STORAGE_KEYS.WATCHED]) ? data[STORAGE_KEYS.WATCHED] : [];
-      watchedSet = new Set(watchedArr);
-      if (data[STORAGE_KEYS.SCROLL_STATE]) {
-        savedAnchor = { ...savedAnchor, ...data[STORAGE_KEYS.SCROLL_STATE] };
-      }
+      watchedSet = new Set(Array.isArray(data[STORAGE_KEYS.WATCHED]) ? data[STORAGE_KEYS.WATCHED] : []);
+      routeAnchors =
+        data[STORAGE_KEYS.ROUTE_ANCHORS] && typeof data[STORAGE_KEYS.ROUTE_ANCHORS] === 'object'
+          ? data[STORAGE_KEYS.ROUTE_ANCHORS]
+          : {};
 
       sendToMain(MSG.SYNC_SETTINGS, settings);
+      sendToMain(MSG.REQUEST_STATUS);
       updateDockVisibility();
       renderDockState();
       if (drawerOpen) renderDrawerBody();
-      scheduleDecorateHomeCards();
-    } catch {
-      // Ignore transient storage errors during context invalidation
-    }
+      scheduleDecorateActiveFeed(60);
+    } catch {}
   }
 
   async function saveSnapshots(nextSnapshots) {
@@ -129,18 +137,18 @@
     } catch {}
     renderDockState();
     if (drawerOpen) renderDrawerBody();
-    scheduleDecorateHomeCards();
+    scheduleDecorateActiveFeed(50);
   }
 
   async function markVideoWatched(videoId) {
     if (!videoId) return;
     watchedSet.add(videoId);
-    const arr = Array.from(watchedSet).slice(-300);
+    const arr = Array.from(watchedSet).slice(-400);
     watchedSet = new Set(arr);
     try {
       await chrome.storage.local.set({ [STORAGE_KEYS.WATCHED]: arr });
     } catch {}
-    scheduleDecorateHomeCards();
+    scheduleDecorateActiveFeed(80);
     if (drawerOpen) renderDrawerBody();
   }
 
@@ -155,25 +163,47 @@
     } catch {}
   }
 
-  async function persistScrollAnchor(anchor) {
-    savedAnchor = { ...anchor, savedAt: Date.now() };
+  async function persistRouteAnchor(routeKey, anchor) {
+    if (!routeKey) return;
+    routeAnchors = {
+      ...routeAnchors,
+      [routeKey]: {
+        scrollY: anchor.scrollY || 0,
+        videoId: anchor.videoId || null,
+        savedAt: Date.now(),
+      },
+    };
+    // Keep anchor map bounded to 12 most recent routes (Home + Subs + recent Searches)
+    const entries = Object.entries(routeAnchors)
+      .sort((a, b) => (b[1]?.savedAt || 0) - (a[1]?.savedAt || 0))
+      .slice(0, 12);
+    routeAnchors = Object.fromEntries(entries);
     try {
-      await chrome.storage.local.set({ [STORAGE_KEYS.SCROLL_STATE]: savedAnchor });
+      await chrome.storage.local.set({ [STORAGE_KEYS.ROUTE_ANCHORS]: routeAnchors });
     } catch {}
   }
 
-  async function togglePinVideo(card) {
+  async function togglePinVideo(card, forceAdd = false) {
     if (!card || !card.videoId) return;
     const exists = pinned.some((p) => p.videoId === card.videoId);
+    if (exists && forceAdd) {
+      showToast(t('pinAdded', 'Pinned to TideLock'), { showRefresh: false });
+      return;
+    }
+
     let next;
     if (exists) {
       next = pinned.filter((p) => p.videoId !== card.videoId);
-      showToast(t('pinRemoved', 'Removed from pinned'), false);
+      showToast(t('pinRemoved', 'Removed from pinned'), { showRefresh: false });
     } else {
+      const displayTitle = card.displayTitle || card.title || card.videoId;
+      const originalTitle = card.originalTitle || card.title || displayTitle;
       next = [
         {
           videoId: card.videoId,
-          title: card.title || card.videoId,
+          title: displayTitle,
+          displayTitle,
+          originalTitle,
           channel: card.channel || '',
           duration: card.duration || '',
           views: card.views || '',
@@ -182,99 +212,144 @@
           pinnedAt: Date.now(),
         },
         ...pinned.filter((p) => p.videoId !== card.videoId),
-      ].slice(0, 60);
-      showToast(t('pinAdded', 'Pinned to TideLock'), false);
+      ].slice(0, 80);
+      showToast(t('pinAdded', 'Pinned to TideLock'), { showRefresh: false });
     }
     await savePinned(next);
   }
 
-  // ---- Scroll Tracking & Precision Restoration ----
+  async function copyListAsMarkdown(videos, heading) {
+    const md = E.formatVideosAsMarkdown(videos, heading);
+    if (!md) return;
+    try {
+      await navigator.clipboard.writeText(md);
+      showToast(t('toastCopiedMd', 'Copied as Markdown'), { showRefresh: false });
+    } catch {
+      // Fallback textarea copy
+      const ta = document.createElement('textarea');
+      ta.value = md;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+      showToast(t('toastCopiedMd', 'Copied as Markdown'), { showRefresh: false });
+    }
+  }
+
+  // ---- Scroll Tracking & Stabilized Anti-Reset Scroll Restoration ----
   function onScrollPassive() {
-    if (!E.isHomePath(window.location.pathname)) return;
+    const routeKey = E.getRouteAnchorKey(window.location.href);
+    if (!routeKey) return;
     if (scrollRafPending) return;
     scrollRafPending = true;
     requestAnimationFrame(() => {
       scrollRafPending = false;
-      if (E.isHomePath(window.location.pathname)) {
-        liveHomeScrollY = window.scrollY || 0;
-      }
+      const rk = E.getRouteAnchorKey(window.location.href);
+      if (rk) liveRouteScrollY[rk] = window.scrollY || 0;
     });
   }
 
+  function cancelScrollRestore() {
+    userCancelledScrollRestore = true;
+  }
+
   window.addEventListener('scroll', onScrollPassive, { passive: true });
+  window.addEventListener('wheel', cancelScrollRestore, { passive: true });
+  window.addEventListener('touchstart', cancelScrollRestore, { passive: true });
   window.addEventListener(
-    'wheel',
-    () => {
-      userCancelledScrollRestore = true;
-    },
-    { passive: true }
-  );
-  window.addEventListener(
-    'touchstart',
-    () => {
-      userCancelledScrollRestore = true;
+    'keydown',
+    (ev) => {
+      if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' '].includes(ev.key)) {
+        userCancelledScrollRestore = true;
+      }
     },
     { passive: true }
   );
 
-  function restoreHomeScrollPosition() {
-    if (!settings.restoreScroll) return;
-    const targetY = savedAnchor.scrollY || 0;
-    const targetVid = savedAnchor.videoId;
+  function getActiveListRoot(routeKey) {
+    if (routeKey === 'home') {
+      const b = document.querySelector('ytd-browse[page-subtype="home"]');
+      return b && !b.hasAttribute('hidden') ? b : null;
+    }
+    if (routeKey === 'subscriptions') {
+      const b = document.querySelector('ytd-browse[page-subtype="subscriptions"]');
+      return b && !b.hasAttribute('hidden') ? b : null;
+    }
+    if (routeKey && routeKey.startsWith('search')) {
+      const s = document.querySelector('ytd-search');
+      return s && !s.hasAttribute('hidden') ? s : null;
+    }
+    return null;
+  }
+
+  function restoreScrollForRoute(routeKey) {
+    if (!settings.restoreScroll || !routeKey) return;
+    if (routeKey !== 'home' && !settings.anchorSubAndSearch) return;
+
+    const anchor = routeAnchors[routeKey];
+    if (!anchor) return;
+    const targetY = anchor.scrollY || 0;
+    const targetVid = anchor.videoId;
     if (targetY < 40 && !targetVid) return;
 
     userCancelledScrollRestore = false;
     const startTime = Date.now();
-    let restoredOnce = false;
+    let statRecorded = false;
+    let settledFrames = 0;
 
-    const attempt = () => {
-      if (userCancelledScrollRestore || !E.isHomePath(window.location.pathname)) return;
-      if (Date.now() - startTime > 2600) return;
+    const step = () => {
+      if (userCancelledScrollRestore) return;
+      if (E.getRouteAnchorKey(window.location.href) !== routeKey) return;
+      const elapsed = Date.now() - startTime;
+      if (elapsed > 2800) return;
 
-      const browse = document.querySelector('ytd-browse[page-subtype="home"]');
-      const isVisible = browse && !browse.hasAttribute('hidden');
+      const root = getActiveListRoot(routeKey);
       const maxScroll = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
 
-      if (isVisible && maxScroll >= Math.min(targetY, 160)) {
+      if (root && maxScroll >= Math.min(targetY, 160)) {
+        let desiredY = targetY;
+
         if (targetVid) {
-          const anchorLink = browse.querySelector(
+          const anchorLink = root.querySelector(
             `a[href*="/watch?v=${CSS.escape(targetVid)}"], a[href*="/shorts/${CSS.escape(targetVid)}"]`
           );
           if (anchorLink) {
             const rect = anchorLink.getBoundingClientRect();
             const docTop = rect.top + window.scrollY;
-            const desiredY = Math.max(0, docTop - Math.round(window.innerHeight * 0.28));
-            const finalY = Math.abs(desiredY - targetY) < 260 ? targetY : desiredY;
-            window.scrollTo({ top: finalY, behavior: 'instant' });
-            if (!restoredOnce) {
-              restoredOnce = true;
-              incrementStat('scrollsRestored');
-            }
-            return;
+            const centeredY = Math.max(0, docTop - Math.round(window.innerHeight * 0.28));
+            desiredY = Math.abs(centeredY - targetY) < 280 ? targetY : centeredY;
           }
         }
 
-        if (maxScroll >= targetY - 120) {
-          window.scrollTo({ top: targetY, behavior: 'instant' });
-          if (!restoredOnce) {
-            restoredOnce = true;
-            incrementStat('scrollsRestored');
+        if (maxScroll >= desiredY - 120) {
+          if (Math.abs(window.scrollY - desiredY) > 24) {
+            window.scrollTo({ top: desiredY, behavior: 'instant' });
+            settledFrames = 0;
+            if (!statRecorded) {
+              statRecorded = true;
+              incrementStat('scrollsRestored');
+            }
+          } else {
+            settledFrames++;
+            // Stay vigilant for at least 750ms in case Polymer fires a delayed scrollTo(0,0)
+            if (settledFrames >= 3 && elapsed >= 750) return;
           }
-          if (Date.now() - startTime > 500) return;
         }
       }
 
-      setTimeout(() => requestAnimationFrame(attempt), 80);
+      setTimeout(() => requestAnimationFrame(step), 75);
     };
 
-    requestAnimationFrame(attempt);
+    requestAnimationFrame(step);
   }
 
-  // ---- DOM Extraction & Card Decoration (Batched via rAF) ----
+  // ---- Scoped DOM Observer + O(1) Batched Card Decoration & Bilingual Sync ----
   function extractCardInfoFromDomElement(itemEl) {
     if (!(itemEl instanceof Element)) return null;
     const link = itemEl.querySelector(
-      'a#video-title-link[href*="/watch?"], a.yt-lockup-metadata-view-model__title[href*="/watch?"], a[href*="/watch?v="], a[href*="/shorts/"]'
+      'a#video-title-link[href*="/watch?"], a.yt-lockup-metadata-view-model__title[href*="/watch?"], a#video-title[href*="/watch?"], a[href*="/watch?v="], a[href*="/shorts/"]'
     );
     if (!link) return null;
     const href = link.getAttribute('href') || '';
@@ -286,8 +361,8 @@
       itemEl.querySelector('.yt-lockup-metadata-view-model__title') ||
       itemEl.querySelector('h3 a') ||
       link;
-    const title = (titleEl?.textContent || link.getAttribute('title') || '').trim();
-    if (!title) return null;
+    const displayTitle = (titleEl?.textContent || link.getAttribute('title') || '').trim();
+    if (!displayTitle) return null;
 
     const channelEl =
       itemEl.querySelector('ytd-channel-name #text') ||
@@ -304,7 +379,8 @@
     const isShort = href.includes('/shorts/');
     return {
       videoId,
-      title,
+      title: displayTitle,
+      displayTitle,
       channel,
       duration,
       views: '',
@@ -325,22 +401,26 @@
     );
   }
 
-  function scheduleDecorateHomeCards() {
-    if (decorateScheduled) return;
-    if (!E.isHomePath(window.location.pathname)) return;
-    decorateScheduled = true;
-    requestAnimationFrame(() => {
-      decorateScheduled = false;
-      decorateHomeCardsBatched();
-    });
+  function scheduleDecorateActiveFeed(delayMs = 220) {
+    const routeKey = E.getRouteAnchorKey(window.location.href);
+    if (!routeKey) return;
+    if (routeKey !== 'home' && !settings.anchorSubAndSearch) return;
+    if (decorateTimer) clearTimeout(decorateTimer);
+    decorateTimer = setTimeout(() => {
+      decorateTimer = null;
+      void decorateActiveFeedBatched(routeKey);
+    }, delayMs);
   }
 
-  async function decorateHomeCardsBatched() {
-    if (!E.isHomePath(window.location.pathname)) return;
-    const browse = document.querySelector('ytd-browse[page-subtype="home"]');
-    if (!browse || browse.hasAttribute('hidden')) return;
+  async function decorateActiveFeedBatched(routeKey) {
+    const root = getActiveListRoot(routeKey);
+    if (!root) return;
 
-    const items = Array.from(browse.querySelectorAll('ytd-rich-item-renderer'));
+    const selector =
+      routeKey.startsWith('search')
+        ? 'ytd-video-renderer, ytd-rich-item-renderer'
+        : 'ytd-rich-item-renderer';
+    const items = Array.from(root.querySelectorAll(selector));
     if (items.length === 0) return;
 
     const pinnedIds = new Set(pinned.map((p) => p.videoId));
@@ -354,19 +434,29 @@
           for (const itemEl of slice) {
             const card = extractCardInfoFromDomElement(itemEl);
             if (!card) continue;
-            domCards.push(card);
+            if (routeKey === 'home') domCards.push(card);
 
             const thumbHost = findCardThumbnailHost(itemEl);
             if (!thumbHost) continue;
+
+            const shouldShowWatched = settings.markWatched && watchedSet.has(card.videoId);
+            const isPinned = pinnedIds.has(card.videoId);
+            const stateSig = `${card.videoId}|${shouldShowWatched ? 1 : 0}|${isPinned ? 1 : 0}`;
+
+            // O(1) fast path: skip DOM mutations when state unchanged
+            if (thumbHost.getAttribute('data-tidelock-sig') === stateSig) {
+              continue;
+            }
+            thumbHost.setAttribute('data-tidelock-sig', stateSig);
             thumbHost.classList.add('tidelock-card-host');
 
-            // 1) Watched badge
+            // 1) Watched badge (notranslate so Immersive Translate leaves it crisp)
             let badge = thumbHost.querySelector(':scope > .tidelock-watched-badge');
-            const shouldShowWatched = settings.markWatched && watchedSet.has(card.videoId);
             if (shouldShowWatched) {
               if (!badge) {
                 badge = document.createElement('div');
-                badge.className = 'tidelock-watched-badge';
+                badge.className = 'tidelock-watched-badge notranslate';
+                badge.setAttribute('translate', 'no');
                 const dot = document.createElement('span');
                 dot.className = 'tidelock-watched-dot';
                 const label = document.createElement('span');
@@ -379,21 +469,21 @@
               badge.remove();
             }
 
-            // 2) Hover Quick-Pin button
+            // 2) Hover Quick-Pin SVG button
             let pinBtn = thumbHost.querySelector(':scope > .tidelock-pin-btn');
-            const isPinned = pinnedIds.has(card.videoId);
             if (!pinBtn) {
               pinBtn = document.createElement('button');
               pinBtn.type = 'button';
-              pinBtn.className = 'tidelock-pin-btn';
-              pinBtn.textContent = '📌';
+              pinBtn.className = 'tidelock-pin-btn notranslate';
+              pinBtn.setAttribute('translate', 'no');
               pinBtn.title = isZhLocale() ? '暂存到 TideLock 待看栏' : 'Pin to TideLock queue';
+              pinBtn.appendChild(I.createSvgIcon('pin', 14));
               pinBtn.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 ev.stopPropagation();
                 ev.stopImmediatePropagation();
-                const latestCard = extractCardInfoFromDomElement(itemEl) || card;
-                togglePinVideo(latestCard);
+                const freshCard = extractCardInfoFromDomElement(itemEl) || card;
+                void togglePinVideo(freshCard);
               });
               thumbHost.appendChild(pinBtn);
             }
@@ -407,28 +497,54 @@
       }
     }
 
-    // Enrich snapshot vault with DOM-observed titles (reflects DeArrow / Anti-Translate)
-    if (domCards.length >= 4 && E.isHomePath(window.location.pathname)) {
-      const merged = E.mergeSnapshotVault(
-        snapshots,
-        {
-          feedId: currentFeedId || `dom_${Date.now()}`,
-          updatedAt: Date.now(),
-          scrollY: liveHomeScrollY,
-          videos: domCards,
-        },
-        settings.maxSnapshots
-      );
-      // Only write if count changed or first snapshot didn't exist
-      const prevCount = snapshots[0]?.videos?.length || 0;
-      const nextCount = merged[0]?.videos?.length || 0;
-      if (snapshots.length === 0 || nextCount !== prevCount) {
-        await saveSnapshots(merged);
+    // Bilingual Title Sync: enrich Home snapshot with live translated/DeArrow titles ONLY if changed
+    if (routeKey === 'home' && domCards.length >= 4) {
+      if (snapshots.length === 0) {
+        const next = E.mergeSnapshotVault(
+          snapshots,
+          {
+            feedId: currentFeedId || `dom_${Date.now()}`,
+            updatedAt: Date.now(),
+            scrollY: liveRouteScrollY.home || 0,
+            videos: domCards,
+          },
+          settings.maxSnapshots
+        );
+        await saveSnapshots(next);
+      } else {
+        const { snapshot: enriched, changed } = E.enrichSnapshotWithDomCards(
+          snapshots[0],
+          domCards
+        );
+        if (changed) {
+          const next = [enriched, ...snapshots.slice(1)];
+          await saveSnapshots(next);
+        }
       }
     }
   }
 
-  // ---- Shadow DOM UI (Floating Dock + Snapshot Drawer + Toast — Pure DOM APIs) ----
+  function attachScopedGridObserver() {
+    const routeKey = E.getRouteAnchorKey(window.location.href);
+    const root = routeKey ? getActiveListRoot(routeKey) : null;
+    const target = root ? root.querySelector('#contents') || root : null;
+
+    if (target === observedContainer) return;
+
+    if (activeGridObserver) {
+      activeGridObserver.disconnect();
+      activeGridObserver = null;
+    }
+    observedContainer = target;
+
+    if (!target) return;
+    activeGridObserver = new MutationObserver(() => {
+      scheduleDecorateActiveFeed(260);
+    });
+    activeGridObserver.observe(target, { childList: true, subtree: true });
+  }
+
+  // ---- Shadow DOM UI (Pure DOM + Crisp SVG — Trusted Types Safe & notranslate) ----
   const SHADOW_CSS = `
     :host {
       all: initial;
@@ -442,7 +558,8 @@
       --tl-border: rgba(15, 23, 42, 0.12);
       --tl-accent: #0284c7;
       --tl-accent-soft: rgba(2, 132, 199, 0.12);
-      --tl-coral: #e11d48;
+      --tl-amber: #d97706;
+      --tl-amber-soft: rgba(217, 119, 6, 0.12);
       --tl-shadow: 0 12px 32px rgba(15, 23, 42, 0.16);
     }
 
@@ -456,8 +573,9 @@
       --tl-border: rgba(248, 250, 252, 0.14);
       --tl-accent: #38bdf8;
       --tl-accent-soft: rgba(56, 189, 248, 0.16);
-      --tl-coral: #fb7185;
-      --tl-shadow: 0 14px 36px rgba(0, 0, 0, 0.52);
+      --tl-amber: #fbbf24;
+      --tl-amber-soft: rgba(251, 191, 36, 0.16);
+      --tl-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
     }
 
     .tl-dock {
@@ -467,7 +585,7 @@
       z-index: 2147483000;
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
       padding: 4px;
       border-radius: 999px;
       background: var(--tl-bg);
@@ -478,9 +596,7 @@
       transition: opacity 0.2s ease, transform 0.2s ease;
     }
 
-    .tl-dock[hidden] {
-      display: none !important;
-    }
+    .tl-dock[hidden] { display: none !important; }
 
     .tl-dock-main {
       display: inline-flex;
@@ -498,9 +614,7 @@
       transition: background 0.15s ease;
     }
 
-    .tl-dock-main:hover {
-      background: var(--tl-surface);
-    }
+    .tl-dock-main:hover { background: var(--tl-surface); }
 
     .tl-dot {
       width: 8px;
@@ -540,7 +654,6 @@
       border-radius: 50%;
       background: transparent;
       color: var(--tl-text-muted);
-      font-size: 14px;
       cursor: pointer;
       transition: background 0.15s ease, color 0.15s ease;
     }
@@ -549,6 +662,16 @@
       background: var(--tl-surface);
       color: var(--tl-text);
     }
+
+    .tl-dock-icon-btn[data-variant="undo"] {
+      color: var(--tl-amber);
+    }
+
+    .tl-dock-icon-btn[data-variant="undo"]:hover {
+      background: var(--tl-amber-soft);
+    }
+
+    .tl-dock-icon-btn[hidden] { display: none !important; }
 
     /* Toast */
     .tl-toast {
@@ -560,7 +683,7 @@
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      padding: 9px 14px;
+      padding: 8px 14px;
       border-radius: 999px;
       background: var(--tl-bg);
       color: var(--tl-text);
@@ -582,6 +705,9 @@
     }
 
     .tl-toast-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
       padding: 4px 10px;
       border: none;
       border-radius: 999px;
@@ -597,12 +723,14 @@
       color: #ffffff;
     }
 
-    /* Slide-over Drawer */
+    .tl-toast-btn[hidden] { display: none !important; }
+
+    /* Backdrop + Slide-over Drawer */
     .tl-backdrop {
       position: fixed;
       inset: 0;
       z-index: 2147483005;
-      background: rgba(2, 6, 23, 0.36);
+      background: rgba(2, 6, 23, 0.38);
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.2s ease;
@@ -618,7 +746,7 @@
       top: 12px;
       right: 12px;
       bottom: 12px;
-      width: min(410px, calc(100vw - 24px));
+      width: min(430px, calc(100vw - 24px));
       z-index: 2147483006;
       display: flex;
       flex-direction: column;
@@ -632,15 +760,13 @@
       overflow: hidden;
     }
 
-    .tl-drawer[data-open="true"] {
-      transform: translateX(0);
-    }
+    .tl-drawer[data-open="true"] { transform: translateX(0); }
 
     .tl-drawer-header {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 14px 16px 10px;
+      padding: 13px 14px 10px;
       border-bottom: 1px solid var(--tl-border);
     }
 
@@ -653,6 +779,15 @@
       letter-spacing: -0.01em;
     }
 
+    .tl-kbd {
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: var(--tl-surface);
+      color: var(--tl-text-muted);
+      font-size: 10px;
+      font-weight: 600;
+    }
+
     .tl-header-actions {
       display: flex;
       align-items: center;
@@ -660,29 +795,38 @@
     }
 
     .tl-btn-sm {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
       height: 28px;
-      padding: 0 10px;
+      padding: 0 9px;
       border: 1px solid var(--tl-border);
       border-radius: 8px;
       background: var(--tl-surface);
       color: var(--tl-text);
-      font-size: 12px;
+      font-size: 11.5px;
       font-weight: 600;
       cursor: pointer;
     }
 
-    .tl-btn-sm:hover {
-      background: var(--tl-surface-hover);
+    .tl-btn-sm:hover { background: var(--tl-surface-hover); }
+    .tl-btn-sm[hidden] { display: none !important; }
+    .tl-btn-sm[data-variant="undo"] {
+      color: var(--tl-amber);
+      background: var(--tl-amber-soft);
+      border-color: transparent;
     }
 
     .tl-close-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
       width: 28px;
       height: 28px;
       border: none;
       border-radius: 8px;
       background: transparent;
       color: var(--tl-text-muted);
-      font-size: 16px;
       cursor: pointer;
     }
 
@@ -694,7 +838,7 @@
     .tl-tabs {
       display: flex;
       gap: 6px;
-      padding: 10px 16px 0;
+      padding: 10px 14px 0;
     }
 
     .tl-tab {
@@ -719,7 +863,7 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
-      padding: 10px 16px;
+      padding: 10px 14px;
       border-bottom: 1px solid var(--tl-border);
     }
 
@@ -730,6 +874,13 @@
       gap: 6px;
       overflow-x: auto;
       scrollbar-width: none;
+    }
+
+    .tl-filter-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
     }
 
     .tl-chip {
@@ -764,9 +915,7 @@
       outline: none;
     }
 
-    .tl-search:focus {
-      border-color: var(--tl-accent);
-    }
+    .tl-search:focus { border-color: var(--tl-accent); }
 
     .tl-list {
       flex: 1;
@@ -774,21 +923,38 @@
       padding: 10px 12px 16px;
       display: flex;
       flex-direction: column;
-      gap: 8px;
+      gap: 6px;
+    }
+
+    .tl-section-header {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 6px 2px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--tl-accent);
+      text-transform: uppercase;
+    }
+
+    .tl-divider {
+      height: 1px;
+      background: var(--tl-border);
+      margin: 6px 4px;
     }
 
     .tl-card {
       display: flex;
       align-items: flex-start;
       gap: 10px;
-      padding: 8px;
+      padding: 7px 8px;
       border-radius: 11px;
       background: transparent;
       border: 1px solid transparent;
-      text-decoration: none;
       color: inherit;
       cursor: pointer;
-      transition: background 0.15s ease, border-color 0.15s ease;
+      transition: background 0.14s ease, border-color 0.14s ease;
     }
 
     .tl-card:hover {
@@ -796,10 +962,19 @@
       border-color: var(--tl-border);
     }
 
+    .tl-card[data-neighbor="true"] {
+      background: var(--tl-accent-soft);
+      border-color: rgba(56, 189, 248, 0.25);
+    }
+
+    .tl-card[data-neighbor="true"]:hover {
+      background: var(--tl-surface);
+    }
+
     .tl-thumb-wrap {
       position: relative;
-      width: 118px;
-      height: 66px;
+      width: 116px;
+      height: 65px;
       border-radius: 8px;
       overflow: hidden;
       background: #1e293b;
@@ -819,7 +994,7 @@
       bottom: 4px;
       padding: 1px 5px;
       border-radius: 4px;
-      background: rgba(0, 0, 0, 0.8);
+      background: rgba(0, 0, 0, 0.82);
       color: #fff;
       font-size: 10px;
       font-weight: 600;
@@ -852,11 +1027,7 @@
       text-overflow: ellipsis;
     }
 
-    .tl-tags {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
+    .tl-tags { display: flex; align-items: center; gap: 6px; }
 
     .tl-tag-watched {
       display: inline-block;
@@ -869,13 +1040,15 @@
     }
 
     .tl-card-pin {
-      width: 26px;
-      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
       border: none;
       border-radius: 7px;
       background: transparent;
       color: var(--tl-text-muted);
-      font-size: 13px;
       cursor: pointer;
       flex-shrink: 0;
     }
@@ -899,17 +1072,18 @@
     if (!uiHost) return;
     const isDark =
       document.documentElement.hasAttribute('dark') ||
-      window.matchMedia('(prefers-color-scheme: dark)').matches &&
-        getComputedStyle(document.documentElement).backgroundColor === 'rgb(15, 15, 15)';
+      (window.matchMedia('(prefers-color-scheme: dark)').matches &&
+        getComputedStyle(document.documentElement).backgroundColor === 'rgb(15, 15, 15)');
     uiHost.setAttribute('data-theme', isDark ? 'dark' : 'light');
   }
 
   function ensureShadowUi() {
-    if (shadowRoot) return;
-    if (!document.body) return;
+    if (shadowRoot || !document.body) return;
 
     uiHost = document.createElement('div');
     uiHost.id = 'tidelock-shadow-host';
+    uiHost.className = 'notranslate';
+    uiHost.setAttribute('translate', 'no');
     shadowRoot = uiHost.attachShadow({ mode: 'open' });
 
     const styleEl = document.createElement('style');
@@ -924,6 +1098,7 @@
     mainBtn.type = 'button';
     mainBtn.className = 'tl-dock-main';
     mainBtn.id = 'tl-dock-main';
+    mainBtn.title = 'TideLock (Alt+Shift+T)';
 
     const dot = document.createElement('span');
     dot.className = 'tl-dot';
@@ -943,17 +1118,26 @@
     mainBtn.appendChild(countPill);
     mainBtn.addEventListener('click', () => setDrawerOpen(!drawerOpen));
 
+    const undoBtn = document.createElement('button');
+    undoBtn.type = 'button';
+    undoBtn.className = 'tl-dock-icon-btn';
+    undoBtn.id = 'tl-dock-undo';
+    undoBtn.setAttribute('data-variant', 'undo');
+    undoBtn.title = t('btnUndoRefresh', 'Undo Refresh');
+    undoBtn.hidden = true;
+    undoBtn.appendChild(I.createSvgIcon('undo', 15));
+    undoBtn.addEventListener('click', () => sendToMain(MSG.UNDO_REFRESH));
+
     const refreshBtn = document.createElement('button');
     refreshBtn.type = 'button';
     refreshBtn.className = 'tl-dock-icon-btn';
     refreshBtn.id = 'tl-dock-refresh';
-    refreshBtn.textContent = '↻';
-    refreshBtn.title = t('btnRefreshFeed', 'Refresh Feed Now');
-    refreshBtn.addEventListener('click', () => {
-      sendToMain(MSG.FORCE_REFRESH);
-    });
+    refreshBtn.title = t('btnRefreshFeed', 'Fresh Feed');
+    refreshBtn.appendChild(I.createSvgIcon('refresh', 14));
+    refreshBtn.addEventListener('click', () => sendToMain(MSG.FORCE_REFRESH));
 
     dockEl.appendChild(mainBtn);
+    dockEl.appendChild(undoBtn);
     dockEl.appendChild(refreshBtn);
     shadowRoot.appendChild(dockEl);
 
@@ -967,7 +1151,10 @@
     toastBtn.type = 'button';
     toastBtn.className = 'tl-toast-btn';
     toastBtn.id = 'tl-toast-btn';
-    toastBtn.textContent = t('toastRefreshAction', 'Refresh');
+    toastBtn.appendChild(I.createSvgIcon('refresh', 12));
+    const toastBtnLabel = document.createElement('span');
+    toastBtnLabel.textContent = t('toastRefreshAction', 'Fresh Feed');
+    toastBtn.appendChild(toastBtnLabel);
     toastBtn.addEventListener('click', () => {
       hideToast();
       sendToMain(MSG.FORCE_REFRESH);
@@ -996,16 +1183,38 @@
     brandDot.className = 'tl-dot';
     const brandText = document.createElement('span');
     brandText.textContent = 'TideLock';
+    const kbd = document.createElement('span');
+    kbd.className = 'tl-kbd';
+    kbd.textContent = 'Alt+Shift+T';
     brand.appendChild(brandDot);
     brand.appendChild(brandText);
+    brand.appendChild(kbd);
 
     const headerActions = document.createElement('div');
     headerActions.className = 'tl-header-actions';
 
+    const drawerUndoBtn = document.createElement('button');
+    drawerUndoBtn.type = 'button';
+    drawerUndoBtn.className = 'tl-btn-sm';
+    drawerUndoBtn.id = 'tl-drawer-undo';
+    drawerUndoBtn.setAttribute('data-variant', 'undo');
+    drawerUndoBtn.hidden = true;
+    drawerUndoBtn.appendChild(I.createSvgIcon('undo', 13));
+    const undoSpan = document.createElement('span');
+    undoSpan.textContent = t('btnUndoRefresh', 'Undo');
+    drawerUndoBtn.appendChild(undoSpan);
+    drawerUndoBtn.addEventListener('click', () => {
+      setDrawerOpen(false);
+      sendToMain(MSG.UNDO_REFRESH);
+    });
+
     const drawerRefreshBtn = document.createElement('button');
     drawerRefreshBtn.type = 'button';
     drawerRefreshBtn.className = 'tl-btn-sm';
-    drawerRefreshBtn.textContent = t('btnRefreshFeed', 'Refresh Feed');
+    drawerRefreshBtn.appendChild(I.createSvgIcon('refresh', 13));
+    const refSpan = document.createElement('span');
+    refSpan.textContent = t('btnRefreshFeed', 'Fresh');
+    drawerRefreshBtn.appendChild(refSpan);
     drawerRefreshBtn.addEventListener('click', () => {
       setDrawerOpen(false);
       sendToMain(MSG.FORCE_REFRESH);
@@ -1014,9 +1223,10 @@
     const closeBtn = document.createElement('button');
     closeBtn.type = 'button';
     closeBtn.className = 'tl-close-btn';
-    closeBtn.textContent = '✕';
+    closeBtn.appendChild(I.createSvgIcon('close', 16));
     closeBtn.addEventListener('click', () => setDrawerOpen(false));
 
+    headerActions.appendChild(drawerUndoBtn);
     headerActions.appendChild(drawerRefreshBtn);
     headerActions.appendChild(closeBtn);
     header.appendChild(brand);
@@ -1030,7 +1240,6 @@
     tabSnaps.type = 'button';
     tabSnaps.className = 'tl-tab';
     tabSnaps.id = 'tl-tab-snapshots';
-    tabSnaps.textContent = t('tabSnapshots', 'Snapshots');
     tabSnaps.addEventListener('click', () => {
       drawerTab = 'snapshots';
       renderDrawerBody();
@@ -1040,7 +1249,6 @@
     tabPins.type = 'button';
     tabPins.className = 'tl-tab';
     tabPins.id = 'tl-tab-pinned';
-    tabPins.textContent = t('tabPinned', 'Pinned');
     tabPins.addEventListener('click', () => {
       drawerTab = 'pinned';
       renderDrawerBody();
@@ -1050,35 +1258,56 @@
     tabsRow.appendChild(tabPins);
     drawer.appendChild(tabsRow);
 
-    // Controls container
+    // Controls
     const controls = document.createElement('div');
     controls.className = 'tl-controls';
-    controls.id = 'tl-controls';
 
     const snapPills = document.createElement('div');
     snapPills.className = 'tl-snap-pills';
     snapPills.id = 'tl-snap-pills';
 
+    const filterWrap = document.createElement('div');
+    filterWrap.className = 'tl-filter-wrap';
     const filterRow = document.createElement('div');
     filterRow.className = 'tl-filter-row';
     filterRow.id = 'tl-filter-row';
+
+    const copyMdBtn = document.createElement('button');
+    copyMdBtn.type = 'button';
+    copyMdBtn.className = 'tl-btn-sm';
+    copyMdBtn.id = 'tl-copy-md';
+    copyMdBtn.title = t('btnCopyMarkdown', 'Copy Markdown');
+    copyMdBtn.appendChild(I.createSvgIcon('copy', 12));
+    const mdSpan = document.createElement('span');
+    mdSpan.textContent = 'MD';
+    copyMdBtn.appendChild(mdSpan);
+    copyMdBtn.addEventListener('click', () => {
+      const list = getCurrentDrawerVideos();
+      const title =
+        drawerTab === 'pinned'
+          ? 'TideLock Pinned Videos'
+          : `TideLock Home Snapshot (${list.length})`;
+      void copyListAsMarkdown(list, title);
+    });
+
+    filterWrap.appendChild(filterRow);
+    filterWrap.appendChild(copyMdBtn);
 
     const searchInput = document.createElement('input');
     searchInput.type = 'search';
     searchInput.className = 'tl-search';
     searchInput.id = 'tl-search';
-    searchInput.placeholder = t('searchPlaceholder', 'Search title or channel...');
+    searchInput.placeholder = t('searchPlaceholder', 'Search title (CN/EN) or channel...');
     searchInput.addEventListener('input', (ev) => {
       searchQuery = (ev.target.value || '').trim().toLowerCase();
       renderDrawerList();
     });
 
     controls.appendChild(snapPills);
-    controls.appendChild(filterRow);
+    controls.appendChild(filterWrap);
     controls.appendChild(searchInput);
     drawer.appendChild(controls);
 
-    // List
     const listEl = document.createElement('div');
     listEl.className = 'tl-list';
     listEl.id = 'tl-list';
@@ -1103,17 +1332,19 @@
     const dot = shadowRoot.getElementById('tl-dock-dot');
     const countPill = shadowRoot.getElementById('tl-dock-count');
     const refreshBtn = shadowRoot.getElementById('tl-dock-refresh');
-    if (dot) {
-      dot.setAttribute('data-paused', settings.enabled ? 'false' : 'true');
-    }
+    const undoBtn = shadowRoot.getElementById('tl-dock-undo');
+    const drawerUndoBtn = shadowRoot.getElementById('tl-drawer-undo');
+
+    const onHome = E.isHomePath(window.location.pathname);
+
+    if (dot) dot.setAttribute('data-paused', settings.enabled ? 'false' : 'true');
     if (countPill) {
-      const n = pinned.length;
-      countPill.hidden = n === 0;
-      countPill.textContent = String(n);
+      countPill.hidden = pinned.length === 0;
+      countPill.textContent = String(pinned.length);
     }
-    if (refreshBtn) {
-      refreshBtn.hidden = !E.isHomePath(window.location.pathname);
-    }
+    if (refreshBtn) refreshBtn.hidden = !onHome;
+    if (undoBtn) undoBtn.hidden = !(onHome && bridgeStatus.hasPreviousFeed);
+    if (drawerUndoBtn) drawerUndoBtn.hidden = !bridgeStatus.hasPreviousFeed;
   }
 
   function setDrawerOpen(open) {
@@ -1125,12 +1356,13 @@
     if (drawer) drawer.setAttribute('data-open', drawerOpen ? 'true' : 'false');
     if (drawerOpen) {
       syncThemeAttr();
+      renderDockState();
       renderDrawerBody();
     }
   }
 
-  function showToast(message, showRefreshBtn = false) {
-    if (!settings.showToast && showRefreshBtn) return;
+  function showToast(message, { showRefresh = false } = {}) {
+    if (!settings.showToast && showRefresh) return;
     ensureShadowUi();
     const toast = shadowRoot?.getElementById('tl-toast');
     const text = shadowRoot?.getElementById('tl-toast-text');
@@ -1138,11 +1370,11 @@
     if (!toast || !text || !btn) return;
 
     text.textContent = message;
-    btn.hidden = !showRefreshBtn;
+    btn.hidden = !showRefresh;
     toast.setAttribute('data-visible', 'true');
 
     if (toastTimer) clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => hideToast(), showRefreshBtn ? 4200 : 2400);
+    toastTimer = setTimeout(() => hideToast(), showRefresh ? 4400 : 2400);
   }
 
   function hideToast() {
@@ -1150,11 +1382,83 @@
     if (toast) toast.setAttribute('data-visible', 'false');
   }
 
-  function navigateToVideo(url, videoId) {
+  // Zero-reload native SPA video switch!
+  function navigateToVideoSpa(url, videoId) {
     setDrawerOpen(false);
-    if (videoId) markVideoWatched(videoId);
-    // Keep same-tab smooth experience!
-    window.location.href = url;
+    if (videoId) void markVideoWatched(videoId);
+    sendToMain(MSG.SPA_NAVIGATE, { url, videoId });
+  }
+
+  function getCurrentDrawerVideos() {
+    const base =
+      drawerTab === 'pinned' ? pinned : snapshots[selectedSnapshotIdx]?.videos || [];
+    return E.filterVideos(base, {
+      filterMode: drawerTab === 'snapshots' ? filterMode : 'all',
+      searchQuery,
+      watchedSet,
+    });
+  }
+
+  function buildDrawerCard(v, pinnedIds, isNeighbor = false) {
+    const row = document.createElement('div');
+    row.className = 'tl-card';
+    if (isNeighbor) row.setAttribute('data-neighbor', 'true');
+    row.addEventListener('click', () => navigateToVideoSpa(v.url, v.videoId));
+
+    const thumbWrap = document.createElement('div');
+    thumbWrap.className = 'tl-thumb-wrap';
+    const img = document.createElement('img');
+    img.className = 'tl-thumb';
+    img.loading = 'lazy';
+    img.src = v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`;
+    img.alt = '';
+    thumbWrap.appendChild(img);
+
+    if (v.duration) {
+      const dur = document.createElement('span');
+      dur.className = 'tl-dur';
+      dur.textContent = v.duration;
+      thumbWrap.appendChild(dur);
+    }
+
+    const meta = document.createElement('div');
+    meta.className = 'tl-meta';
+    const title = document.createElement('div');
+    title.className = 'tl-title';
+    title.textContent = v.displayTitle || v.title || v.videoId;
+
+    const sub = document.createElement('div');
+    sub.className = 'tl-sub';
+    sub.textContent = [v.channel, v.views].filter(Boolean).join(' · ');
+
+    meta.appendChild(title);
+    if (sub.textContent) meta.appendChild(sub);
+
+    if (watchedSet.has(v.videoId)) {
+      const tags = document.createElement('div');
+      tags.className = 'tl-tags';
+      const tag = document.createElement('span');
+      tag.className = 'tl-tag-watched';
+      tag.textContent = t('badgeWatched', 'Watched');
+      tags.appendChild(tag);
+      meta.appendChild(tags);
+    }
+
+    const isPinned = pinnedIds.has(v.videoId);
+    const pinBtn = document.createElement('button');
+    pinBtn.type = 'button';
+    pinBtn.className = 'tl-card-pin';
+    pinBtn.setAttribute('data-pinned', isPinned ? 'true' : 'false');
+    pinBtn.appendChild(I.createSvgIcon('pin', 14, { filled: isPinned }));
+    pinBtn.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      void togglePinVideo(v);
+    });
+
+    row.appendChild(thumbWrap);
+    row.appendChild(meta);
+    row.appendChild(pinBtn);
+    return row;
   }
 
   function renderDrawerBody() {
@@ -1183,7 +1487,12 @@
         chip.type = 'button';
         chip.className = 'tl-chip';
         chip.setAttribute('data-active', idx === selectedSnapshotIdx ? 'true' : 'false');
-        const prefix = idx === 0 ? (isZhLocale() ? '最近' : 'Latest') : formatRelativeTime(snap.updatedAt || snap.createdAt);
+        const prefix =
+          idx === 0
+            ? isZhLocale()
+              ? '最近'
+              : 'Latest'
+            : formatRelativeTime(snap.updatedAt || snap.createdAt);
         chip.textContent = `${prefix} · ${snap.videos.length}`;
         chip.addEventListener('click', () => {
           selectedSnapshotIdx = idx;
@@ -1224,26 +1533,8 @@
     if (!listEl) return;
     listEl.textContent = '';
 
-    let videos = [];
-    if (drawerTab === 'pinned') {
-      videos = pinned;
-    } else {
-      const snap = snapshots[selectedSnapshotIdx];
-      videos = snap ? snap.videos : [];
-    }
-
-    const filtered = videos.filter((v) => {
-      if (drawerTab === 'snapshots') {
-        const isWatched = watchedSet.has(v.videoId);
-        if (filterMode === 'unwatched' && isWatched) return false;
-        if (filterMode === 'watched' && !isWatched) return false;
-      }
-      if (searchQuery) {
-        const hay = `${v.title || ''} ${v.channel || ''}`.toLowerCase();
-        if (!hay.includes(searchQuery)) return false;
-      }
-      return true;
-    });
+    const filtered = getCurrentDrawerVideos();
+    const pinnedIds = new Set(pinned.map((p) => p.videoId));
 
     if (filtered.length === 0) {
       const empty = document.createElement('div');
@@ -1256,84 +1547,70 @@
       return;
     }
 
-    const pinnedIds = new Set(pinned.map((p) => p.videoId));
+    // Highlight "Right beside what you just watched" when on Latest Snapshot with no search filter!
+    const homeAnchorVid = routeAnchors.home?.videoId;
+    const showNeighbors =
+      drawerTab === 'snapshots' &&
+      selectedSnapshotIdx === 0 &&
+      !searchQuery &&
+      filterMode !== 'watched' &&
+      homeAnchorVid;
+
+    const shownNeighborIds = new Set();
+    if (showNeighbors) {
+      const neighbors = E.extractNeighborVideos(
+        snapshots[0]?.videos || [],
+        homeAnchorVid,
+        watchedSet,
+        4
+      );
+      if (neighbors.length > 0) {
+        const hdr = document.createElement('div');
+        hdr.className = 'tl-section-header';
+        hdr.appendChild(I.createSvgIcon('compass', 13));
+        const hdrTxt = document.createElement('span');
+        hdrTxt.textContent = t('sectionBesideLast', 'Right beside what you just watched');
+        hdr.appendChild(hdrTxt);
+        listEl.appendChild(hdr);
+
+        for (const nv of neighbors) {
+          shownNeighborIds.add(nv.videoId);
+          listEl.appendChild(buildDrawerCard(nv, pinnedIds, true));
+        }
+
+        const divider = document.createElement('div');
+        divider.className = 'tl-divider';
+        listEl.appendChild(divider);
+      }
+    }
 
     for (const v of filtered) {
-      const row = document.createElement('div');
-      row.className = 'tl-card';
-      row.addEventListener('click', () => navigateToVideo(v.url, v.videoId));
-
-      const thumbWrap = document.createElement('div');
-      thumbWrap.className = 'tl-thumb-wrap';
-      const img = document.createElement('img');
-      img.className = 'tl-thumb';
-      img.loading = 'lazy';
-      img.src = v.thumbnail || `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`;
-      img.alt = '';
-      thumbWrap.appendChild(img);
-
-      if (v.duration) {
-        const dur = document.createElement('span');
-        dur.className = 'tl-dur';
-        dur.textContent = v.duration;
-        thumbWrap.appendChild(dur);
-      }
-
-      const meta = document.createElement('div');
-      meta.className = 'tl-meta';
-      const title = document.createElement('div');
-      title.className = 'tl-title';
-      title.textContent = v.title;
-
-      const sub = document.createElement('div');
-      sub.className = 'tl-sub';
-      sub.textContent = [v.channel, v.views].filter(Boolean).join(' · ');
-
-      meta.appendChild(title);
-      if (sub.textContent) meta.appendChild(sub);
-
-      if (watchedSet.has(v.videoId)) {
-        const tags = document.createElement('div');
-        tags.className = 'tl-tags';
-        const tag = document.createElement('span');
-        tag.className = 'tl-tag-watched';
-        tag.textContent = t('badgeWatched', 'Watched');
-        tags.appendChild(tag);
-        meta.appendChild(tags);
-      }
-
-      const pinBtn = document.createElement('button');
-      pinBtn.type = 'button';
-      pinBtn.className = 'tl-card-pin';
-      pinBtn.textContent = '📌';
-      pinBtn.setAttribute('data-pinned', pinnedIds.has(v.videoId) ? 'true' : 'false');
-      pinBtn.title = pinnedIds.has(v.videoId)
-        ? t('pinRemoved', 'Unpin')
-        : t('pinAdded', 'Pin');
-      pinBtn.addEventListener('click', (ev) => {
-        ev.stopPropagation();
-        togglePinVideo(v);
-      });
-
-      row.appendChild(thumbWrap);
-      row.appendChild(meta);
-      row.appendChild(pinBtn);
-      listEl.appendChild(row);
+      if (shownNeighborIds.has(v.videoId)) continue;
+      listEl.appendChild(buildDrawerCard(v, pinnedIds, false));
     }
   }
 
   // ---- Receive Events from MAIN World Page Bridge ----
   window.addEventListener('message', async (event) => {
-    if (event.source !== window) return;
+    if (event.source !== window || event.origin !== window.location.origin) return;
     const data = event.data;
     if (!data || data.channel !== BRIDGE_CHANNEL || data.direction !== 'MAIN_TO_ISOLATED') {
       return;
     }
 
     switch (data.type) {
+      case MSG.STATUS_REPORT: {
+        bridgeStatus = { ...bridgeStatus, ...(data.payload || {}) };
+        renderDockState();
+        break;
+      }
+
       case MSG.HOME_CAPTURED: {
         const p = data.payload || {};
         currentFeedId = p.feedId || currentFeedId;
+        bridgeStatus.hasCachedFeed = true;
+        bridgeStatus.hasPreviousFeed = Boolean(p.hasPreviousFeed);
+        bridgeStatus.cardCount = p.count || bridgeStatus.cardCount;
         if (Array.isArray(p.videos) && p.videos.length > 0) {
           const next = E.mergeSnapshotVault(
             snapshots,
@@ -1350,33 +1627,41 @@
           await incrementStat('snapshotsSaved');
         }
         renderDockState();
-        setTimeout(() => scheduleDecorateHomeCards(), 350);
+        attachScopedGridObserver();
+        scheduleDecorateActiveFeed(300);
         break;
       }
 
       case MSG.CONTINUATION_STITCHED: {
         const p = data.payload || {};
+        bridgeStatus.cardCount = p.totalCount || bridgeStatus.cardCount;
         if (Array.isArray(p.videos) && p.videos.length > 0) {
           const next = E.mergeSnapshotVault(
             snapshots,
             {
               feedId: p.feedId || currentFeedId,
               updatedAt: Date.now(),
-              scrollY: p.scrollY || liveHomeScrollY,
+              scrollY: p.scrollY || liveRouteScrollY.home || 0,
               videos: p.videos,
             },
             settings.maxSnapshots
           );
           await saveSnapshots(next);
         }
-        setTimeout(() => scheduleDecorateHomeCards(), 300);
+        scheduleDecorateActiveFeed(280);
         break;
       }
 
-      case MSG.NAV_AWAY_FROM_HOME: {
+      case MSG.NAV_AWAY_FROM_LIST: {
         const p = data.payload || {};
-        const y = typeof p.scrollY === 'number' && p.scrollY > 0 ? p.scrollY : liveHomeScrollY;
-        await persistScrollAnchor({ scrollY: y, videoId: p.videoId || null });
+        const rk = p.routeKey || E.getRouteAnchorKey(window.location.href);
+        if (rk) {
+          const y =
+            typeof p.scrollY === 'number' && p.scrollY > 0
+              ? p.scrollY
+              : liveRouteScrollY[rk] || 0;
+          await persistRouteAnchor(rk, { scrollY: y, videoId: p.videoId || null });
+        }
         if (p.videoId) {
           await markVideoWatched(p.videoId);
         }
@@ -1386,31 +1671,47 @@
 
       case MSG.WATCHED_VIDEO: {
         const p = data.payload || {};
-        if (p.videoId) {
-          await markVideoWatched(p.videoId);
-        }
+        if (p.videoId) await markVideoWatched(p.videoId);
         renderDockState();
         break;
       }
 
       case MSG.FEED_RESTORED: {
         const p = data.payload || {};
+        bridgeStatus.hasPreviousFeed = Boolean(p.hasPreviousFeed);
         await incrementStat('refreshesBlocked');
         const countStr = p.cardCount ? ` (${p.cardCount})` : '';
-        showToast(`${t('toastRestored', 'Home feed preserved')}${countStr}`, true);
-        restoreHomeScrollPosition();
-        setTimeout(() => scheduleDecorateHomeCards(), 400);
+        showToast(`${t('toastRestored', 'Home feed preserved')}${countStr}`, { showRefresh: true });
+        restoreScrollForRoute('home');
+        attachScopedGridObserver();
+        scheduleDecorateActiveFeed(320);
         renderDockState();
         break;
       }
 
-      case MSG.NAV_BACK_TO_HOME: {
+      case MSG.FEED_UNDONE: {
         const p = data.payload || {};
-        if (!p.restoredFromCache) {
-          // YouTube kept DOM alive without re-fetching, still restore scroll & decorate cards!
-          restoreHomeScrollPosition();
+        bridgeStatus.hasPreviousFeed = Boolean(p.hasPreviousFeed);
+        await incrementStat('undosPerformed');
+        const countStr = p.cardCount ? ` (${p.cardCount})` : '';
+        showToast(`${t('toastUndoReady', 'Previous Home feed restored')}${countStr}`, {
+          showRefresh: false,
+        });
+        attachScopedGridObserver();
+        scheduleDecorateActiveFeed(320);
+        renderDockState();
+        break;
+      }
+
+      case MSG.NAV_BACK_TO_LIST: {
+        const p = data.payload || {};
+        const rk = p.routeKey;
+        bridgeStatus.hasPreviousFeed = Boolean(p.hasPreviousFeed);
+        if (rk && !p.restoredFromCache && !p.undoneFromPrevious) {
+          restoreScrollForRoute(rk);
         }
-        setTimeout(() => scheduleDecorateHomeCards(), 350);
+        attachScopedGridObserver();
+        scheduleDecorateActiveFeed(300);
         renderDockState();
         break;
       }
@@ -1420,12 +1721,17 @@
     }
   });
 
-  // ---- Receive Commands from Popup / Service Worker ----
+  // ---- Receive Commands from Popup & Service Worker ----
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || !message.type) return false;
     (async () => {
       try {
         switch (message.type) {
+          case MSG.TOGGLE_DRAWER: {
+            setDrawerOpen(!drawerOpen);
+            sendResponse({ ok: true, open: drawerOpen });
+            break;
+          }
           case MSG.OPEN_DRAWER: {
             setDrawerOpen(true);
             sendResponse({ ok: true });
@@ -1436,9 +1742,40 @@
             sendResponse({ ok: true });
             break;
           }
+          case MSG.TRIGGER_UNDO: {
+            sendToMain(MSG.UNDO_REFRESH);
+            sendResponse({ ok: true });
+            break;
+          }
           case MSG.NAVIGATE_VIDEO: {
-            if (message.url) {
-              navigateToVideo(message.url, message.videoId);
+            if (message.url) navigateToVideoSpa(message.url, message.videoId);
+            sendResponse({ ok: true });
+            break;
+          }
+          case MSG.PIN_VIDEO_EXTERNAL: {
+            const vid = message.videoId || E.extractVideoIdFromUrl(message.url);
+            if (vid) {
+              // Try enriching title from DOM or snapshots
+              let matched = null;
+              for (const snap of snapshots) {
+                matched = snap.videos.find((v) => v.videoId === vid);
+                if (matched) break;
+              }
+              if (!matched) {
+                const link = document.querySelector(
+                  `a[href*="/watch?v=${CSS.escape(vid)}"], a[href*="/shorts/${CSS.escape(vid)}"]`
+                );
+                const cardEl = link?.closest('ytd-rich-item-renderer, ytd-video-renderer, ytd-compact-video-renderer');
+                if (cardEl) matched = extractCardInfoFromDomElement(cardEl);
+              }
+              await togglePinVideo(
+                matched || {
+                  videoId: vid,
+                  title: message.title || `YouTube (${vid})`,
+                  url: message.url || `https://www.youtube.com/watch?v=${vid}`,
+                },
+                true
+              );
             }
             sendResponse({ ok: true });
             break;
@@ -1446,6 +1783,7 @@
           case MSG.GET_TAB_STATE: {
             sendResponse({
               ok: true,
+              ...bridgeStatus,
               isHome: E.isHomePath(window.location.pathname),
               pathname: window.location.pathname,
             });
@@ -1469,7 +1807,7 @@
       sendToMain(MSG.SYNC_SETTINGS, settings);
       updateDockVisibility();
       renderDockState();
-      scheduleDecorateHomeCards();
+      scheduleDecorateActiveFeed(80);
     }
     if (changes[STORAGE_KEYS.SNAPSHOTS]?.newValue) {
       snapshots = changes[STORAGE_KEYS.SNAPSHOTS].newValue;
@@ -1479,11 +1817,11 @@
       pinned = changes[STORAGE_KEYS.PINNED].newValue;
       renderDockState();
       if (drawerOpen) renderDrawerBody();
-      scheduleDecorateHomeCards();
+      scheduleDecorateActiveFeed(80);
     }
     if (changes[STORAGE_KEYS.WATCHED]?.newValue) {
       watchedSet = new Set(changes[STORAGE_KEYS.WATCHED].newValue);
-      scheduleDecorateHomeCards();
+      scheduleDecorateActiveFeed(80);
       if (drawerOpen) renderDrawerBody();
     }
     if (changes[STORAGE_KEYS.STATS]?.newValue) {
@@ -1491,41 +1829,34 @@
     }
   });
 
-  // ---- Boot & Observers ----
+  // ---- Boot & Scoped Observers ----
   function initDomHooks() {
     ensureShadowUi();
 
-    // Watch theme changes on <html>
     const htmlObserver = new MutationObserver(() => syncThemeAttr());
     htmlObserver.observe(document.documentElement, {
       attributes: true,
       attributeFilter: ['dark'],
     });
 
-    // Hide dock during fullscreen playback
     document.addEventListener('fullscreenchange', () => updateDockVisibility());
-
-    // Keyboard shortcut Escape closes drawer
     document.addEventListener('keydown', (ev) => {
-      if (ev.key === 'Escape' && drawerOpen) {
-        setDrawerOpen(false);
-      }
+      if (ev.key === 'Escape' && drawerOpen) setDrawerOpen(false);
     });
 
-    // Observe home grid mutations to decorate newly rendered / scrolled cards
-    const bodyObserver = new MutationObserver(() => {
-      if (E.isHomePath(window.location.pathname)) {
-        scheduleDecorateHomeCards();
-      }
+    window.addEventListener('yt-navigate-finish', () => {
+      setTimeout(() => {
+        attachScopedGridObserver();
+        renderDockState();
+        scheduleDecorateActiveFeed(200);
+      }, 120);
     });
-    if (document.body) {
-      bodyObserver.observe(document.body, { childList: true, subtree: true });
-    }
 
-    scheduleDecorateHomeCards();
+    attachScopedGridObserver();
+    scheduleDecorateActiveFeed(250);
   }
 
-  loadAllState();
+  void loadAllState();
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', initDomHooks, { once: true });
   } else {

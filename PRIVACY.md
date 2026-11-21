@@ -2,17 +2,20 @@
 
 > Last Updated: 2026-11-21
 
-**TideLock** is designed to work 100% locally in your browser. We do not collect, transmit, sell, or share any personal data.
+**TideLock** runs 100% locally in your browser. We do not collect, transmit, sell, or share any personal data.
 
 ## What Data TideLock Stores Locally
 
-To preserve your YouTube home feed, remember scroll positions, and show recent home snapshots or pinned videos, TideLock stores the following information **strictly on your own device** using your browser's local extension storage (`chrome.storage.local`):
+To preserve your YouTube home feed across returns and reloads, remember scroll positions, support one-click Undo Refresh, and display recent snapshots or pinned videos, TideLock stores data **strictly on your own device**:
 
-- Your extension preferences (on/off toggles and display options)
-- Lightweight metadata of recent YouTube Home feed snapshots (video IDs, titles, channel names, durations, thumbnails, and video URLs)
-- Videos you explicitly pin to TideLock's local watchlist
-- Video IDs opened during browsing so TideLock can display a subtle "Watched" badge
-- Local counters (number of unwanted home refreshes prevented)
+- **Browser Extension Local Storage (`chrome.storage.local`)**:
+  - Extension preferences and feature toggles
+  - Lightweight metadata for up to 6 recent YouTube Home feed snapshots (video IDs, original & translated titles, channel names, durations, thumbnails, and video URLs)
+  - Videos you explicitly pin via hover button, snapshot drawer, or right-click menu
+  - Per-route scroll anchors (Home, Subscriptions, Search) and recently watched video IDs
+  - Local counters (unwanted refreshes blocked, scroll restores, undos performed)
+- **Origin-Scoped IndexedDB on `youtube.com` (`TideLockFeedCache`)**:
+  - The current and immediately previous Home feed payloads (auto-expiring after 12 hours) so your Home feed survives watch-page reloads, Chrome Memory Saver tab discards, and accidental `F5` refreshes.
 
 ## What TideLock Never Does
 
@@ -22,7 +25,7 @@ To preserve your YouTube home feed, remember scroll positions, and show recent h
 
 ## Controlling or Deleting Your Data
 
-You can clear saved snapshots at any time inside TideLock's **Settings → Clear Snapshots**, or uninstall the extension to remove all locally stored data immediately.
+You can clear snapshots or reset watched badges anytime inside TideLock's **Settings** tab, clear site data for `youtube.com`, or uninstall the extension to remove all locally stored extension data immediately.
 
 ## Contact
 

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "__MSG_extName__",
   "short_name": "TideLock",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "__MSG_extDescription__",
   "default_locale": "en",
   "icons": {
@@ -22,11 +22,21 @@
     }
   },
   "permissions": [
-    "storage"
+    "storage",
+    "contextMenus"
   ],
   "host_permissions": [
     "https://www.youtube.com/*"
   ],
+  "commands": {
+    "toggle-drawer": {
+      "suggested_key": {
+        "default": "Alt+Shift+T",
+        "mac": "Alt+Shift+T"
+      },
+      "description": "__MSG_cmdToggleDrawer__"
+    }
+  },
   "background": {
     "service_worker": "src/background/service-worker.js"
   },
@@ -40,6 +50,7 @@
       ],
       "js": [
         "src/core/feed-engine.js",
+        "src/content/idb-cache.js",
         "src/content/page-bridge.js"
       ],
       "run_at": "document_start",
@@ -55,6 +66,7 @@
       "js": [
         "src/core/defaults.js",
         "src/core/feed-engine.js",
+        "src/core/svg-icons.js",
         "src/content/content-main.js"
       ],
       "css": [

@@ -1,7 +1,7 @@
 {
   "name": "tidelock",
-  "version": "1.0.0",
-  "description": "Freeze YouTube's home feed when returning from a video — with scroll anchoring, watched badges, quick-pin queue, and instant local feed snapshots.",
+  "version": "2.0.0",
+  "description": "Tidal-lock your YouTube Home feed — zero-reload SPA feed freezing, IndexedDB persistence, accidental refresh undo, multi-feed scroll anchoring, neighboring unwatched shelf, and bilingual snapshot search.",
   "private": true,
   "type": "module",
   "scripts": {

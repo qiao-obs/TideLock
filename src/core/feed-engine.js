@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
 
-  const DEFAULT_MAX_STITCHED = 180;
+  const DEFAULT_MAX_STITCHED = 200;
   const RETURN_INTENT_TTL_MS = 10000;
 
   function safeClone(obj) {
@@ -37,6 +37,10 @@
       }
       const shortsMatch = u.pathname.match(/^\/shorts\/([A-Za-z0-9_-]{11})/);
       if (shortsMatch) return shortsMatch[1];
+      if (u.hostname === 'youtu.be') {
+        const seg = u.pathname.replace(/^\/+/, '').split('/')[0];
+        return seg && /^[A-Za-z0-9_-]{11}$/.test(seg) ? seg : null;
+      }
       return null;
     } catch {
       return null;
@@ -45,6 +49,22 @@
 
   function isHomePath(pathname) {
     return pathname === '/' || pathname === '';
+  }
+
+  function getRouteAnchorKey(urlOrHref) {
+    if (!urlOrHref || typeof urlOrHref !== 'string') return null;
+    try {
+      const u = new URL(urlOrHref, 'https://www.youtube.com');
+      if (isHomePath(u.pathname)) return 'home';
+      if (u.pathname === '/feed/subscriptions') return 'subscriptions';
+      if (u.pathname === '/results') {
+        const q = (u.searchParams.get('search_query') || '').trim().toLowerCase();
+        return q ? `search:${q}` : 'search';
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   function parseBrowseRequestBody(rawBody) {
@@ -69,7 +89,10 @@
       } catch {
         return empty;
       }
-    } else if (ArrayBuffer.isView(rawBody) || Object.prototype.toString.call(rawBody) === '[object ArrayBuffer]') {
+    } else if (
+      ArrayBuffer.isView(rawBody) ||
+      Object.prototype.toString.call(rawBody) === '[object ArrayBuffer]'
+    ) {
       try {
         const bytes = ArrayBuffer.isView(rawBody)
           ? new Uint8Array(rawBody.buffer, rawBody.byteOffset, rawBody.byteLength)
@@ -85,9 +108,12 @@
     if (!parsed || typeof parsed !== 'object') return empty;
 
     const browseId = typeof parsed.browseId === 'string' ? parsed.browseId : null;
-    const params = typeof parsed.params === 'string' && parsed.params.length > 0 ? parsed.params : null;
+    const params =
+      typeof parsed.params === 'string' && parsed.params.length > 0 ? parsed.params : null;
     const continuation =
-      typeof parsed.continuation === 'string' && parsed.continuation.length > 0 ? parsed.continuation : null;
+      typeof parsed.continuation === 'string' && parsed.continuation.length > 0
+        ? parsed.continuation
+        : null;
 
     const isHome = browseId === 'FEwhat_to_watch';
     return {
@@ -108,14 +134,18 @@
     if (!state || !reqInfo) {
       return { intercept: false, reason: 'invalid_args' };
     }
+    if (!reqInfo.isHomeInitial) {
+      return { intercept: false, reason: 'not_home_initial' };
+    }
+    // Highest priority: explicit "Undo Refresh" replay of displaced previous Home feed
+    if (state.undoReplayPending && state.hasCachedFeed) {
+      return { intercept: true, reason: 'undo_replay' };
+    }
     if (!state.enabled) {
       return { intercept: false, reason: 'disabled' };
     }
     if (!state.hasCachedFeed) {
       return { intercept: false, reason: 'no_cache' };
-    }
-    if (!reqInfo.isHomeInitial) {
-      return { intercept: false, reason: 'not_home_initial' };
     }
     if (state.explicitRefreshUntil && now < state.explicitRefreshUntil) {
       return { intercept: false, reason: 'explicit_refresh' };
@@ -214,7 +244,10 @@
       if (!videoId || typeof videoId !== 'string') return null;
       const title = extractText(v.title);
       if (!title) return null;
-      const channel = extractText(v.ownerText) || extractText(v.longBylineText) || extractText(v.shortBylineText);
+      const channel =
+        extractText(v.ownerText) ||
+        extractText(v.longBylineText) ||
+        extractText(v.shortBylineText);
       const duration = extractText(v.lengthText);
       const views = extractText(v.shortViewCountText) || extractText(v.viewCountText);
       const thumbs = v.thumbnail?.thumbnails;
@@ -226,6 +259,8 @@
       return {
         videoId,
         title,
+        originalTitle: title,
+        displayTitle: title,
         channel,
         duration,
         views,
@@ -239,15 +274,22 @@
     if (content.lockupViewModel) {
       const lv = content.lockupViewModel;
       const contentType = lv.contentType || '';
-      if (contentType && contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' && contentType !== 'LOCKUP_CONTENT_TYPE_SHORTS') {
-        // Still allow if watchEndpoint exists (skip mixes/playlists without single videoId unless watchEndpoint present)
+      if (
+        contentType &&
+        contentType !== 'LOCKUP_CONTENT_TYPE_VIDEO' &&
+        contentType !== 'LOCKUP_CONTENT_TYPE_SHORTS'
+      ) {
         if (!lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId) {
           return null;
         }
       }
 
-      const watchEpId = lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
-      const rawId = typeof lv.contentId === 'string' && /^[A-Za-z0-9_-]{11}$/.test(lv.contentId) ? lv.contentId : null;
+      const watchEpId =
+        lv?.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
+      const rawId =
+        typeof lv.contentId === 'string' && /^[A-Za-z0-9_-]{11}$/.test(lv.contentId)
+          ? lv.contentId
+          : null;
       const videoId = watchEpId || rawId;
       if (!videoId) return null;
 
@@ -300,6 +342,8 @@
       return {
         videoId,
         title,
+        originalTitle: title,
+        displayTitle: title,
         channel,
         duration,
         views,
@@ -327,6 +371,8 @@
       return {
         videoId,
         title,
+        originalTitle: title,
+        displayTitle: title,
         channel: 'Shorts',
         duration: 'Shorts',
         views,
@@ -413,7 +459,12 @@
   }
 
   function computeOverlapRatio(cardsA, cardsB) {
-    if (!Array.isArray(cardsA) || !Array.isArray(cardsB) || cardsA.length === 0 || cardsB.length === 0) {
+    if (
+      !Array.isArray(cardsA) ||
+      !Array.isArray(cardsB) ||
+      cardsA.length === 0 ||
+      cardsB.length === 0
+    ) {
       return 0;
     }
     const setA = new Set(cardsA.map((c) => c.videoId));
@@ -424,9 +475,36 @@
     return matches / Math.min(cardsA.length, cardsB.length);
   }
 
-  function mergeSnapshotVault(existingSnapshots, incomingSnapshot, maxSnapshots = 5) {
+  function mergeCardMetadata(prev, incoming) {
+    if (!prev) {
+      return {
+        ...incoming,
+        originalTitle: incoming.originalTitle || incoming.title || '',
+        displayTitle: incoming.displayTitle || incoming.title || '',
+      };
+    }
+    const originalTitle = prev.originalTitle || prev.title || incoming.originalTitle || incoming.title || '';
+    const displayTitle = incoming.displayTitle || incoming.title || prev.displayTitle || prev.title || '';
+    return {
+      ...prev,
+      ...incoming,
+      title: displayTitle || originalTitle,
+      originalTitle,
+      displayTitle,
+      channel: incoming.channel || prev.channel || '',
+      duration: incoming.duration || prev.duration || '',
+      views: incoming.views || prev.views || '',
+      thumbnail: incoming.thumbnail || prev.thumbnail,
+    };
+  }
+
+  function mergeSnapshotVault(existingSnapshots, incomingSnapshot, maxSnapshots = 6) {
     const list = Array.isArray(existingSnapshots) ? existingSnapshots.slice() : [];
-    if (!incomingSnapshot || !Array.isArray(incomingSnapshot.videos) || incomingSnapshot.videos.length === 0) {
+    if (
+      !incomingSnapshot ||
+      !Array.isArray(incomingSnapshot.videos) ||
+      incomingSnapshot.videos.length === 0
+    ) {
       return list.slice(0, maxSnapshots);
     }
 
@@ -436,17 +514,18 @@
       const highOverlap = computeOverlapRatio(latest.videos, incomingSnapshot.videos) >= 0.55;
 
       if (sameFeedId || highOverlap) {
-        // Merge newly scrolled cards into the existing snapshot without creating duplicate entries
         const byId = new Map();
         for (const v of latest.videos) byId.set(v.videoId, v);
         for (const v of incomingSnapshot.videos) {
-          const prev = byId.get(v.videoId);
-          byId.set(v.videoId, prev ? { ...prev, ...v, title: v.title || prev.title } : v);
+          byId.set(v.videoId, mergeCardMetadata(byId.get(v.videoId), v));
         }
         list[0] = {
           ...latest,
           updatedAt: incomingSnapshot.updatedAt || Date.now(),
-          scrollY: typeof incomingSnapshot.scrollY === 'number' ? incomingSnapshot.scrollY : latest.scrollY,
+          scrollY:
+            typeof incomingSnapshot.scrollY === 'number'
+              ? incomingSnapshot.scrollY
+              : latest.scrollY,
           videos: Array.from(byId.values()).slice(0, DEFAULT_MAX_STITCHED),
         };
         return list.slice(0, maxSnapshots);
@@ -459,10 +538,107 @@
       createdAt: incomingSnapshot.createdAt || Date.now(),
       updatedAt: incomingSnapshot.updatedAt || Date.now(),
       scrollY: typeof incomingSnapshot.scrollY === 'number' ? incomingSnapshot.scrollY : 0,
-      videos: incomingSnapshot.videos.slice(0, DEFAULT_MAX_STITCHED),
+      videos: incomingSnapshot.videos
+        .map((v) => mergeCardMetadata(null, v))
+        .slice(0, DEFAULT_MAX_STITCHED),
     });
 
     return list.slice(0, maxSnapshots);
+  }
+
+  function enrichSnapshotWithDomCards(snapshot, domCards) {
+    if (!snapshot || !Array.isArray(snapshot.videos) || !Array.isArray(domCards) || domCards.length === 0) {
+      return { snapshot, changed: false };
+    }
+    const byId = new Map(snapshot.videos.map((v) => [v.videoId, v]));
+    let changed = false;
+
+    for (const dc of domCards) {
+      if (!dc || !dc.videoId) continue;
+      const existing = byId.get(dc.videoId);
+      if (!existing) {
+        byId.set(dc.videoId, mergeCardMetadata(null, dc));
+        changed = true;
+      } else {
+        const nextDisplay = (dc.displayTitle || dc.title || '').trim();
+        const nextChannel = (dc.channel || '').trim();
+        if (
+          (nextDisplay && nextDisplay !== (existing.displayTitle || existing.title)) ||
+          (nextChannel && nextChannel !== existing.channel)
+        ) {
+          byId.set(
+            dc.videoId,
+            mergeCardMetadata(existing, {
+              ...dc,
+              displayTitle: nextDisplay || existing.displayTitle,
+              channel: nextChannel || existing.channel,
+            })
+          );
+          changed = true;
+        }
+      }
+    }
+
+    if (!changed) return { snapshot, changed: false };
+    return {
+      snapshot: {
+        ...snapshot,
+        updatedAt: Date.now(),
+        videos: Array.from(byId.values()).slice(0, DEFAULT_MAX_STITCHED),
+      },
+      changed: true,
+    };
+  }
+
+  function extractNeighborVideos(videos, anchorVideoId, watchedSet = new Set(), limit = 6) {
+    if (!Array.isArray(videos) || videos.length === 0 || !anchorVideoId) return [];
+    const idx = videos.findIndex((v) => v && v.videoId === anchorVideoId);
+    if (idx === -1) return [];
+
+    const result = [];
+    const seen = new Set([anchorVideoId]);
+    for (let offset = 1; offset < videos.length && result.length < limit; offset++) {
+      for (const candidateIdx of [idx + offset, idx - offset]) {
+        if (candidateIdx < 0 || candidateIdx >= videos.length) continue;
+        const cand = videos[candidateIdx];
+        if (!cand || seen.has(cand.videoId) || watchedSet.has(cand.videoId)) continue;
+        seen.add(cand.videoId);
+        result.push(cand);
+        if (result.length >= limit) break;
+      }
+    }
+    return result;
+  }
+
+  function filterVideos(videos, opts = {}) {
+    if (!Array.isArray(videos)) return [];
+    const { filterMode = 'all', searchQuery = '', watchedSet = new Set() } = opts;
+    const q = (searchQuery || '').trim().toLowerCase();
+
+    return videos.filter((v) => {
+      if (!v || !v.videoId) return false;
+      const isWatched = watchedSet.has(v.videoId);
+      if (filterMode === 'unwatched' && isWatched) return false;
+      if (filterMode === 'watched' && !isWatched) return false;
+      if (q) {
+        const hay = `${v.displayTitle || ''} ${v.originalTitle || ''} ${v.title || ''} ${v.channel || ''}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }
+
+  function formatVideosAsMarkdown(videos, heading = '') {
+    if (!Array.isArray(videos) || videos.length === 0) return '';
+    const lines = [];
+    if (heading) lines.push(`## ${heading}`, '');
+    for (const v of videos) {
+      const title = (v.displayTitle || v.title || v.videoId).replace(/[\[\]]/g, '');
+      const url = v.url || `https://www.youtube.com/watch?v=${v.videoId}`;
+      const meta = [v.channel, v.duration].filter(Boolean).join(' · ');
+      lines.push(meta ? `- [${title}](${url}) — ${meta}` : `- [${title}](${url})`);
+    }
+    return lines.join('\n');
   }
 
   const api = {
@@ -472,6 +648,7 @@
     extractText,
     extractVideoIdFromUrl,
     isHomePath,
+    getRouteAnchorKey,
     parseBrowseRequestBody,
     shouldInterceptHomeBrowse,
     findRichGridContents,
@@ -482,7 +659,12 @@
     extractSnapshotCardsFromBrowse,
     stitchHomeResponse,
     computeOverlapRatio,
+    mergeCardMetadata,
     mergeSnapshotVault,
+    enrichSnapshotWithDomCards,
+    extractNeighborVideos,
+    filterVideos,
+    formatVideosAsMarkdown,
   };
 
   if (typeof root !== 'undefined') {

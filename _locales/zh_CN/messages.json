@@ -3,13 +3,19 @@
     "message": "TideLock — YouTube 首页潮汐锁定"
   },
   "extDescription": {
-    "message": "看完 YouTube 视频退回首页不再刷新推荐流！自动锚定滚动位置、标记刚刚看过的视频，并本地保存首页快照与待看暂存栏。"
+    "message": "看完 YouTube 视频退回首页不再刷新！支持 IndexedDB 持久化锁流、一键撤回误刷新、多页滚动锚定、同屏邻近未看推荐与中英双语快照搜索。"
+  },
+  "cmdToggleDrawer": {
+    "message": "在 YouTube 页面开关 TideLock 快照与暂存抽屉"
+  },
+  "ctxPinVideo": {
+    "message": "暂存该视频到 TideLock 待看栏"
   },
   "statusActive": {
-    "message": "首页防刷新已开启"
+    "message": "首页潮汐锁定中"
   },
   "statusPaused": {
-    "message": "首页防刷新已暂停"
+    "message": "首页锁定已暂停"
   },
   "statBlocked": {
     "message": "已拦截刷新"
@@ -29,11 +35,14 @@
   "tabSettings": {
     "message": "设置"
   },
+  "sectionBesideLast": {
+    "message": "刚才同屏未看"
+  },
   "settingEnabled": {
     "message": "回退首页自动锁定原推荐流"
   },
   "settingEnabledDesc": {
-    "message": "默认全自动生效，无需新开标签页，看完视频返回仍在原处。"
+    "message": "默认全自动生效，无需新开标签页，支持跨重载持久化缓存。"
   },
   "settingLogoPreserve": {
     "message": "从视频页点左上角 Logo 也保留原首页"
@@ -45,19 +54,25 @@
     "message": "精准恢复离开前的滚动位置"
   },
   "settingRestoreScrollDesc": {
-    "message": "回到首页自动定位到刚才点开的那个视频卡片附近。"
+    "message": "抗页面二次归零，且手动滚轮时瞬间让位不抢鼠标。"
+  },
+  "settingMultiFeed": {
+    "message": "同步锚定「订阅页」与「搜索结果页」"
+  },
+  "settingMultiFeedDesc": {
+    "message": "从订阅流或搜索结果点开视频后返回，也能回到原位置并标出已看。"
   },
   "settingMarkWatched": {
     "message": "轻标本次会话已看过的视频"
   },
   "settingMarkWatchedDesc": {
-    "message": "在点看过的卡片角落打一个淡雅角标，方便一眼找到旁边没看的。"
+    "message": "在点看过的卡片左上角打淡雅角标，一眼锁定旁边未看视频。"
   },
   "settingShowDock": {
     "message": "在 YouTube 角落显示轻量胶囊入口"
   },
   "settingShowDockDesc": {
-    "message": "专为桌面独立 YouTube 窗口设计，随时一键回看快照或换一批。"
+    "message": "专为桌面独立 YouTube 窗口打造，也支持 Alt+Shift+T 随时呼出。"
   },
   "settingShowToast": {
     "message": "恢复首页时显示轻提示"
@@ -66,13 +81,22 @@
     "message": "短暂提示已保住原首页，并附带一键「换一批」按钮。"
   },
   "btnRefreshFeed": {
-    "message": "立即换一批"
+    "message": "换一批"
+  },
+  "btnUndoRefresh": {
+    "message": "撤回刷新"
   },
   "btnOpenDrawer": {
-    "message": "在页面展开快照"
+    "message": "展开抽屉"
+  },
+  "btnCopyMarkdown": {
+    "message": "复制 Markdown"
   },
   "btnClearSnapshots": {
     "message": "清空快照"
+  },
+  "btnClearWatched": {
+    "message": "清除已看角标"
   },
   "filterAll": {
     "message": "全部"
@@ -84,13 +108,13 @@
     "message": "已看"
   },
   "searchPlaceholder": {
-    "message": "搜索标题或频道名..."
+    "message": "中/英文标题或频道名搜索..."
   },
   "emptySnapshots": {
-    "message": "打开 YouTube 首页后，TideLock 会自动帮你留存首页视频快照。"
+    "message": "打开 YouTube 首页后，TideLock 会自动留存你的首页快照。"
   },
   "emptyPinned": {
-    "message": "还没有暂存的视频。在首页卡片或快照里点图钉图标即可临时存到这里。"
+    "message": "还没有暂存的视频。悬停视频封面、右键任意视频链接，或在快照里点图钉即可加入。"
   },
   "badgeWatched": {
     "message": "刚刚看过"
@@ -98,13 +122,22 @@
   "toastRestored": {
     "message": "已为你稳住原首页"
   },
+  "toastUndoReady": {
+    "message": "已时光倒流恢复上一批首页"
+  },
   "toastRefreshAction": {
     "message": "换一批"
+  },
+  "toastCopiedMd": {
+    "message": "已复制为 Markdown 清单"
   },
   "pinAdded": {
     "message": "已加入待看暂存栏"
   },
   "pinRemoved": {
     "message": "已移出待看暂存栏"
+  },
+  "diagTitle": {
+    "message": "引擎运行状态"
   }
 }

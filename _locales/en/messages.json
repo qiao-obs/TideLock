@@ -3,7 +3,13 @@
     "message": "TideLock — Keep YouTube Home Feed"
   },
   "extDescription": {
-    "message": "Stop YouTube from refreshing your home feed when returning from a video. Anchors scroll position, marks watched videos, and saves local feed snapshots."
+    "message": "Stop YouTube from refreshing your home feed when returning from a video. Features IndexedDB feed locking, accidental refresh undo, scroll anchoring, neighboring unwatched shelf, and local snapshots."
+  },
+  "cmdToggleDrawer": {
+    "message": "Toggle TideLock Snapshots & Pinned Drawer on YouTube"
+  },
+  "ctxPinVideo": {
+    "message": "Pin video to TideLock queue"
   },
   "statusActive": {
     "message": "Feed Lock Active"
@@ -18,7 +24,7 @@
     "message": "Saved snapshots"
   },
   "statPinned": {
-    "message": "Pinned videos"
+    "message": "Pinned queue"
   },
   "tabSnapshots": {
     "message": "Snapshots"
@@ -29,23 +35,32 @@
   "tabSettings": {
     "message": "Settings"
   },
+  "sectionBesideLast": {
+    "message": "Right beside what you just watched"
+  },
   "settingEnabled": {
-    "message": "Auto-lock home feed on back"
+    "message": "Auto-lock Home feed on return"
   },
   "settingEnabledDesc": {
-    "message": "Restore the exact home feed when returning from a video without opening extra tabs."
+    "message": "Restore the exact Home feed when returning from a video without opening extra tabs."
   },
   "settingLogoPreserve": {
-    "message": "Also keep feed when clicking YouTube logo from a video"
+    "message": "Keep feed when clicking YouTube logo from a video"
   },
   "settingLogoPreserveDesc": {
-    "message": "Clicking the logo while already on Home still loads fresh videos."
+    "message": "Clicking the logo while already on Home still loads a fresh feed."
   },
   "settingRestoreScroll": {
     "message": "Restore exact scroll position"
   },
   "settingRestoreScrollDesc": {
-    "message": "Jump right back to the video card you clicked."
+    "message": "Stabilized scroll anchoring that yields immediately when you scroll."
+  },
+  "settingMultiFeed": {
+    "message": "Anchor Subscriptions & Search scroll too"
+  },
+  "settingMultiFeedDesc": {
+    "message": "Remember scroll position and watched cards on Subscriptions and Search results."
   },
   "settingMarkWatched": {
     "message": "Mark videos watched in this session"
@@ -57,7 +72,7 @@
     "message": "Show compact floating dock on YouTube"
   },
   "settingShowDockDesc": {
-    "message": "Handy for YouTube desktop PWA windows without a browser toolbar."
+    "message": "Ideal for YouTube desktop PWA windows without a browser toolbar (Alt+Shift+T)."
   },
   "settingShowToast": {
     "message": "Show subtle restore notification"
@@ -66,13 +81,22 @@
     "message": "Brief pill with a one-click Refresh button when your feed is preserved."
   },
   "btnRefreshFeed": {
-    "message": "Refresh Feed Now"
+    "message": "Fresh Feed"
+  },
+  "btnUndoRefresh": {
+    "message": "Undo Refresh"
   },
   "btnOpenDrawer": {
-    "message": "Open Snapshots on Page"
+    "message": "Open Drawer"
+  },
+  "btnCopyMarkdown": {
+    "message": "Copy Markdown"
   },
   "btnClearSnapshots": {
     "message": "Clear Snapshots"
+  },
+  "btnClearWatched": {
+    "message": "Reset Watched Marks"
   },
   "filterAll": {
     "message": "All"
@@ -84,13 +108,13 @@
     "message": "Watched"
   },
   "searchPlaceholder": {
-    "message": "Search title or channel..."
+    "message": "Search title (CN/EN) or channel..."
   },
   "emptySnapshots": {
     "message": "Visit YouTube Home and TideLock will automatically snapshot your feed."
   },
   "emptyPinned": {
-    "message": "No pinned videos yet. Hover any video card or snapshot item to pin it here."
+    "message": "No pinned videos yet. Hover any video card, right-click any YouTube link, or pin from Snapshots."
   },
   "badgeWatched": {
     "message": "Watched"
@@ -98,13 +122,22 @@
   "toastRestored": {
     "message": "Home feed preserved"
   },
+  "toastUndoReady": {
+    "message": "Previous Home feed restored"
+  },
   "toastRefreshAction": {
-    "message": "Refresh"
+    "message": "Fresh Feed"
+  },
+  "toastCopiedMd": {
+    "message": "Copied as Markdown"
   },
   "pinAdded": {
     "message": "Pinned to TideLock"
   },
   "pinRemoved": {
     "message": "Removed from pinned"
+  },
+  "diagTitle": {
+    "message": "Engine Status"
   }
 }
