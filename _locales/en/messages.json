@@ -68,6 +68,12 @@
   "settingMarkWatchedDesc": {
     "message": "Subtle badge on opened cards so nearby unwatched videos stand out."
   },
+  "settingHideShorts": {
+    "message": "Hide Shorts in Snapshots by default"
+  },
+  "settingHideShortsDesc": {
+    "message": "Keep snapshot & neighbor lists focused on full videos (toggleable anytime in the filter bar)."
+  },
   "settingShowDock": {
     "message": "Show compact floating dock on YouTube"
   },
@@ -89,6 +95,9 @@
   "btnOpenDrawer": {
     "message": "Open Drawer"
   },
+  "btnBackHome": {
+    "message": "Back to Home"
+  },
   "btnCopyMarkdown": {
     "message": "Copy Markdown"
   },
@@ -106,6 +115,9 @@
   },
   "filterWatched": {
     "message": "Watched"
+  },
+  "filterNoShorts": {
+    "message": "No Shorts"
   },
   "searchPlaceholder": {
     "message": "Search title (CN/EN) or channel..."

@@ -16,7 +16,9 @@
     restoreScroll: true,
     anchorSubAndSearch: true,
     markWatched: true,
+    hideShorts: true,
     showFloatingDock: true,
+    dockBottomPx: 20,
     showToast: true,
     maxSnapshots: 6,
     maxStitchedItems: 200,
@@ -39,6 +41,7 @@
     FORCE_REFRESH: 'FORCE_REFRESH',
     UNDO_REFRESH: 'UNDO_REFRESH',
     SPA_NAVIGATE: 'SPA_NAVIGATE',
+    RETURN_TO_HOME: 'RETURN_TO_HOME',
     REQUEST_STATUS: 'REQUEST_STATUS',
     // MAIN -> ISOLATED
     HOME_CAPTURED: 'HOME_CAPTURED',

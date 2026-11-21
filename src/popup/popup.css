@@ -285,6 +285,24 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--surface-hover) transparent;
+}
+
+.video-list::-webkit-scrollbar,
+.settings-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.video-list::-webkit-scrollbar-thumb,
+.settings-list::-webkit-scrollbar-thumb {
+  background: var(--surface-hover);
+  border-radius: 999px;
+}
+
+.video-list::-webkit-scrollbar-track,
+.settings-list::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .video-card {

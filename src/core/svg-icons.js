@@ -43,6 +43,10 @@
       { tag: 'circle', cx: '11', cy: '11', r: '8' },
       { tag: 'path', d: 'm21 21-4.3-4.3' },
     ],
+    arrowLeft: [
+      { tag: 'path', d: 'm12 19-7-7 7-7' },
+      { tag: 'path', d: 'M19 12H5' },
+    ],
   });
 
   function createSvgIcon(name, size = 15, opts = {}) {

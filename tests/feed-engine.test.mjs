@@ -416,7 +416,7 @@ test('formatVideosAsMarkdown outputs clean Obsidian/Notion-ready Markdown links'
 test('Manifest V3, locales, commands, permissions, cross-world isolation, and CSP compliance checks', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
   assert.equal(manifest.manifest_version, 3);
-  assert.equal(manifest.version, '2.1.1');
+  assert.equal(manifest.version, '2.2.0');
   assert.ok(manifest.permissions.includes('storage'));
   assert.ok(manifest.permissions.includes('contextMenus'));
   assert.ok(manifest.commands['toggle-drawer']);
@@ -580,4 +580,71 @@ test('page-bridge decompresses gzip-encoded YouTube 2026 /youtubei/v1/browse POS
     ['AAA11111111', 'BBB22222222']
   );
   assert.ok(postedMessages.some((m) => m.type === 'FEED_RESTORED'));
+});
+
+test('v2.2.0 polish: single-row 2026 metadata views, invisible blank title stripping, and hideShorts filtering', () => {
+  // 1. Invisible Hangul filler / zero-width blank titles must be stripped
+  assert.equal(Engine.cleanDisplayText('ㅤㅤㅤ\u200B  '), '');
+  assert.equal(Engine.cleanDisplayText('  AI   Agents\uFEFF '), 'AI Agents');
+
+  // 2. Single-row 2026 desktop lockupViewModel metadata: [channel, views, relativeTime]
+  const singleRowItem = {
+    richItemRenderer: {
+      content: {
+        lockupViewModel: {
+          contentType: 'LOCKUP_CONTENT_TYPE_VIDEO',
+          contentId: 'MC7k4ruZD5c',
+          metadata: {
+            lockupMetadataViewModel: {
+              title: { content: '初学者如何投资（2026年版）' },
+              metadata: {
+                contentMetadataViewModel: {
+                  metadataRows: [
+                    {
+                      metadataParts: [
+                        { text: { content: 'Mark Tilbury' } },
+                        { text: { content: '917万次观看' } },
+                        { text: { content: '3年前' } },
+                      ],
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  const blankTitleItem = {
+    richItemRenderer: {
+      content: {
+        videoRenderer: {
+          videoId: 'QrqiSt4qyNM',
+          title: { runs: [{ text: 'ㅤㅤㅤ' }] },
+        },
+      },
+    },
+  };
+  const card = Engine.extractCardFromRichItem(singleRowItem);
+  assert.equal(card.channel, 'Mark Tilbury');
+  assert.equal(card.views, '917万次观看 · 3年前');
+  assert.equal(Engine.extractCardFromRichItem(blankTitleItem), null);
+
+  // 3. hideShorts filters Shorts in both filterVideos and extractNeighborVideos
+  const mix = [
+    { videoId: 'v1', title: 'Long 1', isShort: false },
+    { videoId: 's1', title: 'Short 1', isShort: true },
+    { videoId: 'v2', title: 'Long 2', isShort: false },
+    { videoId: 's2', title: 'Short 2', isShort: true },
+    { videoId: 'v3', title: 'Long 3', isShort: false },
+  ];
+  assert.deepEqual(
+    Engine.filterVideos(mix, { hideShorts: true }).map((v) => v.videoId),
+    ['v1', 'v2', 'v3']
+  );
+  assert.deepEqual(
+    Engine.extractNeighborVideos(mix, 'v2', new Set(), 4, { hideShorts: true }).map((v) => v.videoId),
+    ['v3', 'v1']
+  );
 });

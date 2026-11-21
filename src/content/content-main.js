@@ -380,12 +380,12 @@
       itemEl.querySelector('h3 a') ||
       itemEl.querySelector('h3') ||
       link;
-    const displayTitle = (
+    const displayTitle = E.cleanDisplayText(
       titleEl?.textContent ||
-      link.getAttribute('title') ||
-      link.getAttribute('aria-label') ||
-      ''
-    ).trim();
+        link.getAttribute('title') ||
+        link.getAttribute('aria-label') ||
+        ''
+    );
     if (!displayTitle) return null;
 
     const channelEl =
@@ -394,14 +394,44 @@
       itemEl.querySelector('.yt-content-metadata-view-model__metadata-row a') ||
       itemEl.querySelector('.ytContentMetadataViewModelMetadataRow span') ||
       itemEl.querySelector('.yt-content-metadata-view-model__metadata-row span');
-    const channel = (channelEl?.textContent || '').trim();
+    const channel = E.cleanDisplayText(channelEl?.textContent || '');
+
+    // Extract views/relative time from legacy #metadata-line or 2026 metadataRows
+    let views = '';
+    const metaRows = Array.from(
+      itemEl.querySelectorAll(
+        '.ytContentMetadataViewModelMetadataRow, .yt-content-metadata-view-model__metadata-row'
+      )
+    );
+    if (metaRows.length >= 2) {
+      views = E.cleanDisplayText(metaRows[1].textContent || '');
+    } else if (metaRows.length === 1) {
+      const rowSpans = Array.from(metaRows[0].querySelectorAll('span'))
+        .map((s) => E.cleanDisplayText(s.textContent || ''))
+        .filter((txt) => txt && txt !== channel && txt !== '•' && txt !== '·');
+      if (rowSpans.length > 0) {
+        const deduped = [];
+        for (const s of rowSpans) {
+          if (!deduped.some((prev) => prev.includes(s) || s.includes(prev))) {
+            deduped.push(s);
+          }
+        }
+        views = deduped.slice(0, 2).join(' · ');
+      }
+    }
+    if (!views) {
+      const legacySpans = Array.from(itemEl.querySelectorAll('#metadata-line span'))
+        .map((s) => E.cleanDisplayText(s.textContent || ''))
+        .filter(Boolean);
+      if (legacySpans.length > 0) views = legacySpans.join(' · ');
+    }
 
     const durEl =
       itemEl.querySelector('ytd-thumbnail-overlay-time-status-renderer #text') ||
       itemEl.querySelector('badge-shape .badge-shape-wiz__text') ||
       itemEl.querySelector('.ytBadgeShapeText') ||
       itemEl.querySelector('.yt-badge-shape__text');
-    const duration = (durEl?.textContent || '').trim();
+    const duration = E.cleanDisplayText(durEl?.textContent || '');
 
     const isShort = href.includes('/shorts/');
     return {
@@ -410,7 +440,7 @@
       displayTitle,
       channel,
       duration,
-      views: '',
+      views,
       thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
       url: isShort
         ? `https://www.youtube.com/shorts/${videoId}`
@@ -624,7 +654,30 @@
       box-shadow: var(--tl-shadow);
       backdrop-filter: blur(14px);
       -webkit-backdrop-filter: blur(14px);
+      opacity: 0.78;
+      user-select: none;
+      touch-action: none;
       transition: opacity 0.2s ease, transform 0.2s ease;
+    }
+
+    .tl-dock:hover,
+    .tl-dock:focus-within,
+    .tl-dock[data-dragging="true"] {
+      opacity: 1;
+    }
+
+    .tl-dock[data-dragging="true"] {
+      cursor: ns-resize;
+      transition: none;
+    }
+
+    .tl-dock-icon-btn[data-variant="home"] {
+      color: var(--tl-accent);
+    }
+
+    .tl-dock-icon-btn[data-variant="home"]:hover {
+      background: var(--tl-accent-soft);
+      color: var(--tl-accent);
     }
 
     .tl-dock[hidden] { display: none !important; }
@@ -955,6 +1008,21 @@
       display: flex;
       flex-direction: column;
       gap: 6px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--tl-surface-hover) transparent;
+    }
+
+    .tl-list::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .tl-list::-webkit-scrollbar-thumb {
+      background: var(--tl-surface-hover);
+      border-radius: 999px;
+    }
+
+    .tl-list::-webkit-scrollbar-track {
+      background: transparent;
     }
 
     .tl-section-header {
@@ -1121,15 +1189,67 @@
     styleEl.textContent = SHADOW_CSS;
     shadowRoot.appendChild(styleEl);
 
-    // 1) Floating Dock
+    // 1) Floating Dock (vertically draggable along right edge, persisted)
     dockEl = document.createElement('div');
     dockEl.className = 'tl-dock';
+    let suppressDockClickUntil = 0;
+
+    dockEl.addEventListener('pointerdown', (ev) => {
+      if (ev.button !== 0) return;
+      const startY = ev.clientY;
+      const startBottom = parseFloat(dockEl.style.bottom) || settings.dockBottomPx || 20;
+      let dragging = false;
+
+      const onMove = (moveEv) => {
+        const dy = startY - moveEv.clientY;
+        if (!dragging && Math.abs(dy) < 6) return;
+        if (!dragging) {
+          dragging = true;
+          dockEl.setAttribute('data-dragging', 'true');
+        }
+        const maxBottom = Math.max(24, window.innerHeight - 84);
+        const nextBottom = Math.round(Math.min(maxBottom, Math.max(16, startBottom + dy)));
+        dockEl.style.bottom = `${nextBottom}px`;
+      };
+
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        if (dragging) {
+          dockEl.removeAttribute('data-dragging');
+          suppressDockClickUntil = Date.now() + 220;
+          const finalBottom = parseFloat(dockEl.style.bottom) || 20;
+          settings = { ...settings, dockBottomPx: finalBottom };
+          void chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: settings });
+        }
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    });
+
+    const backHomeBtn = document.createElement('button');
+    backHomeBtn.type = 'button';
+    backHomeBtn.className = 'tl-dock-icon-btn';
+    backHomeBtn.id = 'tl-dock-home';
+    backHomeBtn.setAttribute('data-variant', 'home');
+    backHomeBtn.title = t('btnBackHome', 'Back to locked Home');
+    backHomeBtn.hidden = true;
+    backHomeBtn.appendChild(I.createSvgIcon('arrowLeft', 15));
+    backHomeBtn.addEventListener('click', () => {
+      if (Date.now() < suppressDockClickUntil) return;
+      sendToMain(MSG.RETURN_TO_HOME);
+    });
 
     const mainBtn = document.createElement('button');
     mainBtn.type = 'button';
     mainBtn.className = 'tl-dock-main';
     mainBtn.id = 'tl-dock-main';
-    mainBtn.title = 'TideLock (Alt+Shift+T)';
+    mainBtn.title = isZhLocale()
+      ? 'TideLock (Alt+Shift+T · 上下拖动可调位置)'
+      : 'TideLock (Alt+Shift+T · Drag vertically to move)';
 
     const dot = document.createElement('span');
     dot.className = 'tl-dot';
@@ -1147,7 +1267,10 @@
     mainBtn.appendChild(dot);
     mainBtn.appendChild(label);
     mainBtn.appendChild(countPill);
-    mainBtn.addEventListener('click', () => setDrawerOpen(!drawerOpen));
+    mainBtn.addEventListener('click', () => {
+      if (Date.now() < suppressDockClickUntil) return;
+      setDrawerOpen(!drawerOpen);
+    });
 
     const undoBtn = document.createElement('button');
     undoBtn.type = 'button';
@@ -1157,7 +1280,10 @@
     undoBtn.title = t('btnUndoRefresh', 'Undo Refresh');
     undoBtn.hidden = true;
     undoBtn.appendChild(I.createSvgIcon('undo', 15));
-    undoBtn.addEventListener('click', () => sendToMain(MSG.UNDO_REFRESH));
+    undoBtn.addEventListener('click', () => {
+      if (Date.now() < suppressDockClickUntil) return;
+      sendToMain(MSG.UNDO_REFRESH);
+    });
 
     const refreshBtn = document.createElement('button');
     refreshBtn.type = 'button';
@@ -1165,8 +1291,12 @@
     refreshBtn.id = 'tl-dock-refresh';
     refreshBtn.title = t('btnRefreshFeed', 'Fresh Feed');
     refreshBtn.appendChild(I.createSvgIcon('refresh', 14));
-    refreshBtn.addEventListener('click', () => sendToMain(MSG.FORCE_REFRESH));
+    refreshBtn.addEventListener('click', () => {
+      if (Date.now() < suppressDockClickUntil) return;
+      sendToMain(MSG.FORCE_REFRESH);
+    });
 
+    dockEl.appendChild(backHomeBtn);
     dockEl.appendChild(mainBtn);
     dockEl.appendChild(undoBtn);
     dockEl.appendChild(refreshBtn);
@@ -1356,12 +1486,18 @@
     if (!dockEl) return;
     const isFullscreen = Boolean(document.fullscreenElement);
     dockEl.hidden = !settings.showFloatingDock || isFullscreen;
+    const bottomPx =
+      typeof settings.dockBottomPx === 'number' && Number.isFinite(settings.dockBottomPx)
+        ? Math.min(Math.max(16, settings.dockBottomPx), Math.max(24, window.innerHeight - 84))
+        : 20;
+    dockEl.style.bottom = `${bottomPx}px`;
   }
 
   function renderDockState() {
     if (!shadowRoot) return;
     const dot = shadowRoot.getElementById('tl-dock-dot');
     const countPill = shadowRoot.getElementById('tl-dock-count');
+    const backHomeBtn = shadowRoot.getElementById('tl-dock-home');
     const refreshBtn = shadowRoot.getElementById('tl-dock-refresh');
     const undoBtn = shadowRoot.getElementById('tl-dock-undo');
     const drawerUndoBtn = shadowRoot.getElementById('tl-drawer-undo');
@@ -1372,6 +1508,9 @@
     if (countPill) {
       countPill.hidden = pinned.length === 0;
       countPill.textContent = String(pinned.length);
+    }
+    if (backHomeBtn) {
+      backHomeBtn.hidden = onHome || (!bridgeStatus.hasCachedFeed && snapshots.length === 0);
     }
     if (refreshBtn) refreshBtn.hidden = !onHome;
     if (undoBtn) undoBtn.hidden = !(onHome && bridgeStatus.hasPreviousFeed);
@@ -1427,6 +1566,7 @@
       filterMode: drawerTab === 'snapshots' ? filterMode : 'all',
       searchQuery,
       watchedSet,
+      hideShorts: drawerTab === 'snapshots' ? Boolean(settings.hideShorts) : false,
     });
   }
 
@@ -1434,7 +1574,19 @@
     const row = document.createElement('div');
     row.className = 'tl-card';
     if (isNeighbor) row.setAttribute('data-neighbor', 'true');
-    row.addEventListener('click', () => navigateToVideoSpa(v.url, v.videoId));
+    row.addEventListener('click', (ev) => {
+      if (ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+        window.open(v.url, '_blank', 'noopener');
+        return;
+      }
+      navigateToVideoSpa(v.url, v.videoId);
+    });
+    row.addEventListener('auxclick', (ev) => {
+      if (ev.button === 1) {
+        ev.preventDefault();
+        window.open(v.url, '_blank', 'noopener');
+      }
+    });
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'tl-thumb-wrap';
@@ -1524,7 +1676,10 @@
               ? '最近'
               : 'Latest'
             : formatRelativeTime(snap.updatedAt || snap.createdAt);
-        chip.textContent = `${prefix} · ${snap.videos.length}`;
+        const visibleCount = settings.hideShorts
+          ? snap.videos.filter((v) => !v.isShort).length
+          : snap.videos.length;
+        chip.textContent = `${prefix} · ${visibleCount}`;
         chip.addEventListener('click', () => {
           selectedSnapshotIdx = idx;
           renderDrawerBody();
@@ -1553,6 +1708,18 @@
         });
         filterRow.appendChild(chip);
       }
+
+      const noShortsChip = document.createElement('button');
+      noShortsChip.type = 'button';
+      noShortsChip.className = 'tl-chip';
+      noShortsChip.setAttribute('data-active', settings.hideShorts ? 'true' : 'false');
+      noShortsChip.textContent = t('filterNoShorts', 'No Shorts');
+      noShortsChip.addEventListener('click', () => {
+        settings = { ...settings, hideShorts: !settings.hideShorts };
+        void chrome.storage.local.set({ [STORAGE_KEYS.SETTINGS]: settings });
+        renderDrawerBody();
+      });
+      filterRow.appendChild(noShortsChip);
     }
 
     renderDrawerList();
@@ -1593,7 +1760,8 @@
         snapshots[0]?.videos || [],
         homeAnchorVid,
         watchedSet,
-        4
+        4,
+        { hideShorts: Boolean(settings.hideShorts) }
       );
       if (neighbors.length > 0) {
         const hdr = document.createElement('div');
@@ -1838,6 +2006,7 @@
       sendToMain(MSG.SYNC_SETTINGS, settings);
       updateDockVisibility();
       renderDockState();
+      if (drawerOpen) renderDrawerBody();
       scheduleDecorateActiveFeed(80);
     }
     if (changes[STORAGE_KEYS.SNAPSHOTS]?.newValue) {

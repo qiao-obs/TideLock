@@ -903,6 +903,18 @@
         spaNavigateToVideo(p.url, p.videoId);
         break;
       }
+      case 'RETURN_TO_HOME': {
+        if (E.isHomePath(window.location.pathname)) {
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+        } else {
+          state.returnIntent = 'LOGO_FROM_AWAY';
+          state.returnIntentAt = Date.now();
+          state.explicitLogoOnHome = false;
+          state.wasAwayFromHome = true;
+          triggerNativeHomeBrowse();
+        }
+        break;
+      }
       case 'REQUEST_STATUS': {
         emitStatusReport();
         break;

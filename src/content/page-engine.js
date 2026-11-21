@@ -17,13 +17,23 @@
     return JSON.parse(JSON.stringify(obj));
   }
 
+  function cleanDisplayText(str) {
+    if (typeof str !== 'string') return '';
+    return str
+      .replace(/[\u200B-\u200F\u202A-\u202E\u2060\u2800\u3164\uFEFF]+/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   function extractText(node) {
     if (!node) return '';
-    if (typeof node === 'string') return node.trim();
-    if (typeof node.content === 'string') return node.content.trim();
-    if (typeof node.simpleText === 'string') return node.simpleText.trim();
+    if (typeof node === 'string') return cleanDisplayText(node);
+    if (typeof node.content === 'string') return cleanDisplayText(node.content);
+    if (typeof node.simpleText === 'string') return cleanDisplayText(node.simpleText);
     if (Array.isArray(node.runs)) {
-      return node.runs.map((r) => (r && typeof r.text === 'string' ? r.text : '')).join('').trim();
+      return cleanDisplayText(
+        node.runs.map((r) => (r && typeof r.text === 'string' ? r.text : '')).join('')
+      );
     }
     return '';
   }
@@ -345,17 +355,27 @@
       let channel = '';
       let views = '';
       if (Array.isArray(rows)) {
-        const parts = [];
-        for (const row of rows) {
+        const rowTexts = [];
+        const firstRowParts = [];
+        for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+          const row = rows[rIdx];
           if (!Array.isArray(row?.metadataParts)) continue;
-          const rowText = row.metadataParts
-            .map((p) => extractText(p?.text))
-            .filter(Boolean)
-            .join(' · ');
-          if (rowText) parts.push(rowText);
+          const partStrings = row.metadataParts
+            .map((p) => extractText(p?.text) || extractText(p?.attributedString))
+            .filter(Boolean);
+          if (rIdx === 0) firstRowParts.push(...partStrings);
+          if (partStrings.length > 0) rowTexts.push(partStrings.join(' · '));
         }
-        channel = parts[0] || '';
-        views = parts[1] || '';
+        if (rowTexts.length >= 2) {
+          channel = rowTexts[0] || '';
+          views = rowTexts[1] || '';
+        } else if (firstRowParts.length >= 2) {
+          // 2026 compact desktop single-row metadata: [channel, views, relativeTime]
+          channel = firstRowParts[0] || '';
+          views = firstRowParts.slice(1).join(' · ');
+        } else {
+          channel = rowTexts[0] || '';
+        }
       }
 
       let duration = '';
@@ -650,11 +670,13 @@
         byId.set(dc.videoId, mergeCardMetadata(null, dc));
         changed = true;
       } else {
-        const nextDisplay = (dc.displayTitle || dc.title || '').trim();
-        const nextChannel = (dc.channel || '').trim();
+        const nextDisplay = cleanDisplayText(dc.displayTitle || dc.title || '');
+        const nextChannel = cleanDisplayText(dc.channel || '');
+        const nextViews = cleanDisplayText(dc.views || '');
         if (
           (nextDisplay && nextDisplay !== (existing.displayTitle || existing.title)) ||
-          (nextChannel && nextChannel !== existing.channel)
+          (nextChannel && nextChannel !== existing.channel) ||
+          (nextViews && !existing.views)
         ) {
           byId.set(
             dc.videoId,
@@ -662,6 +684,7 @@
               ...dc,
               displayTitle: nextDisplay || existing.displayTitle,
               channel: nextChannel || existing.channel,
+              views: nextViews || existing.views,
             })
           );
           changed = true;
@@ -680,8 +703,9 @@
     };
   }
 
-  function extractNeighborVideos(videos, anchorVideoId, watchedSet = new Set(), limit = 6) {
+  function extractNeighborVideos(videos, anchorVideoId, watchedSet = new Set(), limit = 6, opts = {}) {
     if (!Array.isArray(videos) || videos.length === 0 || !anchorVideoId) return [];
+    const { hideShorts = false } = opts;
     const idx = videos.findIndex((v) => v && v.videoId === anchorVideoId);
     if (idx === -1) return [];
 
@@ -692,6 +716,7 @@
         if (candidateIdx < 0 || candidateIdx >= videos.length) continue;
         const cand = videos[candidateIdx];
         if (!cand || seen.has(cand.videoId) || watchedSet.has(cand.videoId)) continue;
+        if (hideShorts && cand.isShort) continue;
         seen.add(cand.videoId);
         result.push(cand);
         if (result.length >= limit) break;
@@ -702,11 +727,17 @@
 
   function filterVideos(videos, opts = {}) {
     if (!Array.isArray(videos)) return [];
-    const { filterMode = 'all', searchQuery = '', watchedSet = new Set() } = opts;
+    const {
+      filterMode = 'all',
+      searchQuery = '',
+      watchedSet = new Set(),
+      hideShorts = false,
+    } = opts;
     const q = (searchQuery || '').trim().toLowerCase();
 
     return videos.filter((v) => {
       if (!v || !v.videoId) return false;
+      if (hideShorts && v.isShort) return false;
       const isWatched = watchedSet.has(v.videoId);
       if (filterMode === 'unwatched' && isWatched) return false;
       if (filterMode === 'watched' && !isWatched) return false;
@@ -737,6 +768,7 @@
     RETURN_INTENT_TTL_MS,
     CHIP_CLICK_TTL_MS,
     safeClone,
+    cleanDisplayText,
     extractText,
     extractVideoIdFromUrl,
     isHomePath,

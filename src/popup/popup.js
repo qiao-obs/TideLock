@@ -49,6 +49,7 @@
   let lastTabError = '';
 
   const els = {
+    extVersion: document.getElementById('ext-version'),
     statusLabel: document.getElementById('status-label'),
     masterToggle: document.getElementById('master-toggle'),
     statBlocked: document.getElementById('stat-blocked'),
@@ -161,7 +162,11 @@
     renderAll();
   }
 
-  async function openVideo(video) {
+  async function openVideo(video, openInBackgroundTab = false) {
+    if (openInBackgroundTab) {
+      await chrome.tabs.create({ url: video.url, active: false });
+      return;
+    }
     if (activeYouTubeTabId) {
       try {
         await chrome.tabs.sendMessage(activeYouTubeTabId, {
@@ -193,6 +198,12 @@
   }
 
   function renderHeaderAndStats() {
+    if (els.extVersion) {
+      try {
+        const ver = chrome.runtime.getManifest()?.version;
+        if (ver) els.extVersion.textContent = `v${ver}`;
+      } catch {}
+    }
     els.masterToggle.checked = Boolean(settings.enabled);
     els.statusLabel.textContent = settings.enabled
       ? t('statusActive', 'Feed Lock Active')
@@ -241,7 +252,16 @@
 
     const card = document.createElement('div');
     card.className = 'video-card';
-    card.addEventListener('click', () => openVideo(video));
+    card.addEventListener('click', (ev) => {
+      const bg = Boolean(ev.ctrlKey || ev.metaKey || ev.shiftKey);
+      void openVideo(video, bg);
+    });
+    card.addEventListener('auxclick', (ev) => {
+      if (ev.button === 1) {
+        ev.preventDefault();
+        void openVideo(video, true);
+      }
+    });
 
     const thumbWrap = document.createElement('div');
     thumbWrap.className = 'thumb-wrap';
@@ -303,6 +323,7 @@
       filterMode,
       searchQuery,
       watchedSet,
+      hideShorts: Boolean(settings.hideShorts),
     });
   }
 
@@ -316,7 +337,10 @@
       pill.className = 'pill';
       pill.setAttribute('data-active', idx === selectedSnapIdx ? 'true' : 'false');
       const label = idx === 0 ? (isZh() ? '最近' : 'Latest') : formatRelTime(snap.updatedAt || snap.createdAt);
-      pill.textContent = `${label} · ${snap.videos.length}`;
+      const visibleCount = settings.hideShorts
+        ? snap.videos.filter((v) => !v.isShort).length
+        : snap.videos.length;
+      pill.textContent = `${label} · ${visibleCount}`;
       pill.addEventListener('click', () => {
         selectedSnapIdx = idx;
         renderSnapshotsPanel();
@@ -342,6 +366,17 @@
       });
       els.filterPills.appendChild(pill);
     }
+
+    const noShortsPill = document.createElement('button');
+    noShortsPill.type = 'button';
+    noShortsPill.className = 'pill';
+    noShortsPill.setAttribute('data-active', settings.hideShorts ? 'true' : 'false');
+    noShortsPill.textContent = t('filterNoShorts', 'No Shorts');
+    noShortsPill.addEventListener('click', () => {
+      void updateSettings({ hideShorts: !settings.hideShorts });
+      renderSnapshotsPanel();
+    });
+    els.filterPills.appendChild(noShortsPill);
 
     els.snapshotList.textContent = '';
     const filtered = getFilteredSnapshotVideos();
@@ -386,6 +421,7 @@
       { key: 'restoreScroll', title: 'settingRestoreScroll', desc: 'settingRestoreScrollDesc' },
       { key: 'anchorSubAndSearch', title: 'settingMultiFeed', desc: 'settingMultiFeedDesc' },
       { key: 'markWatched', title: 'settingMarkWatched', desc: 'settingMarkWatchedDesc' },
+      { key: 'hideShorts', title: 'settingHideShorts', desc: 'settingHideShortsDesc' },
       { key: 'showFloatingDock', title: 'settingShowDock', desc: 'settingShowDockDesc' },
       { key: 'showToast', title: 'settingShowToast', desc: 'settingShowToastDesc' },
     ];

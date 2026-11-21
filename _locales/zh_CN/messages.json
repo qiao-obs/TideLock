@@ -68,6 +68,12 @@
   "settingMarkWatchedDesc": {
     "message": "在点看过的卡片左上角打淡雅角标，一眼锁定旁边未看视频。"
   },
+  "settingHideShorts": {
+    "message": "快照与同屏推荐默认过滤 Shorts"
+  },
+  "settingHideShortsDesc": {
+    "message": "屏蔽货架里刷屏的短视频，让首页快照聚焦高质量长视频（列表内可随时一键切换）。"
+  },
   "settingShowDock": {
     "message": "在 YouTube 角落显示轻量胶囊入口"
   },
@@ -89,6 +95,9 @@
   "btnOpenDrawer": {
     "message": "展开抽屉"
   },
+  "btnBackHome": {
+    "message": "回原首页"
+  },
   "btnCopyMarkdown": {
     "message": "复制 Markdown"
   },
@@ -106,6 +115,9 @@
   },
   "filterWatched": {
     "message": "已看"
+  },
+  "filterNoShorts": {
+    "message": "不含 Shorts"
   },
   "searchPlaceholder": {
     "message": "中/英文标题或频道名搜索..."
